@@ -123,8 +123,14 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
   html {
     @apply font-sans;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
   }
 }
