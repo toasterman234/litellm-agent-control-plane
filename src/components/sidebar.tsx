@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PanelLeft, Plus, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Search } from "lucide-react";
 
+import { AgentAvatar } from "@/components/agent-avatar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 import {
@@ -16,7 +17,7 @@ import {
 
 const REPO_URL = "https://github.com/BerriAI/litellm-agent-platform";
 const POLL_INTERVAL_MS = 10000;
-const RECENT_SESSION_LIMIT = 8;
+const RECENT_LIMIT = 5;
 
 function statusDotClass(status: string): string {
   switch (status) {
@@ -34,12 +35,31 @@ function statusDotClass(status: string): string {
 }
 
 function shortId(id: string): string {
-  if (id.length <= 14) return id;
-  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+  return id.slice(0, 8);
+}
+
+function formatRelative(iso?: string | null): string {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const diff = Date.now() - then;
+  if (diff < 0) return "just now";
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
 }
 
 function agentLabel(a: AgentRow): string {
   return a.name?.trim() || a.id;
+}
+
+function sessionLabel(s: SessionRow): string {
+  return `Session ${shortId(s.id)}`;
 }
 
 export function Sidebar() {
@@ -47,6 +67,37 @@ export function Sidebar() {
 
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Track which agent the current route belongs to so we can auto-expand it.
+  const activeAgentId = useMemo(() => {
+    if (pathname.startsWith("/agents/")) {
+      const segs = pathname.split("/");
+      const id = segs[2];
+      // Filter out non-id paths like "/agents/new"
+      if (id && id !== "new") return id;
+    }
+    if (pathname.startsWith("/sessions/")) {
+      const segs = pathname.split("/");
+      const sid = segs[2];
+      if (sid && sid !== "new") {
+        const session = sessions.find((s) => s.id === sid);
+        return session?.agent_id ?? null;
+      }
+    }
+    return null;
+  }, [pathname, sessions]);
+
+  // Auto-expand the active agent whenever the route changes.
+  useEffect(() => {
+    if (!activeAgentId) return;
+    setExpanded((prev) => {
+      if (prev.has(activeAgentId)) return prev;
+      const next = new Set(prev);
+      next.add(activeAgentId);
+      return next;
+    });
+  }, [activeAgentId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,6 +129,23 @@ export function Sidebar() {
     [agents],
   );
 
+  const sessionsByAgent = useMemo(() => {
+    const m = new Map<string, SessionRow[]>();
+    for (const s of sessions) {
+      const list = m.get(s.agent_id) ?? [];
+      list.push(s);
+      m.set(s.agent_id, list);
+    }
+    for (const list of m.values()) {
+      list.sort((a, b) => {
+        const at = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return bt - at;
+      });
+    }
+    return m;
+  }, [sessions]);
+
   const recentSessions = useMemo(
     () =>
       [...sessions]
@@ -86,7 +154,7 @@ export function Sidebar() {
           const bt = b.created_at ? new Date(b.created_at).getTime() : 0;
           return bt - at;
         })
-        .slice(0, RECENT_SESSION_LIMIT),
+        .slice(0, RECENT_LIMIT),
     [sessions],
   );
 
@@ -95,6 +163,15 @@ export function Sidebar() {
     for (const a of agents) m.set(a.id, agentLabel(a));
     return m;
   }, [agents]);
+
+  function toggle(agentId: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      return next;
+    });
+  }
 
   return (
     <aside
@@ -122,14 +199,6 @@ export function Sidebar() {
 
       {/* Search row */}
       <div className="flex items-center gap-1.5 px-3 pb-2">
-        <button
-          type="button"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (coming soon)"
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          <PanelLeft className="size-3.5" aria-hidden />
-        </button>
         <div
           className="flex flex-1 items-center gap-1.5 rounded-md border border-sidebar-border px-2 py-1 text-[11px] text-muted-foreground"
           aria-hidden
@@ -170,9 +239,66 @@ export function Sidebar() {
         aria-label="Agents and sessions"
         className="flex-1 overflow-y-auto px-2 pb-2"
       >
-        {/* Agents section */}
-        <SectionHeader label="Agents" count={sortedAgents.length} />
-        <ul className="mb-3 space-y-px">
+        {/* Recent sessions across agents */}
+        {recentSessions.length > 0 ? (
+          <>
+            <SectionHeader
+              label="Recent"
+              count={recentSessions.length}
+              href="/sessions"
+              active={pathname === "/sessions"}
+            />
+            <ul className="mb-3 space-y-px">
+              {recentSessions.map((s) => {
+                const href = `/sessions/${s.id}`;
+                const active = pathname === href;
+                const agentName =
+                  agentNameById.get(s.agent_id) ?? s.agent_id;
+                return (
+                  <li key={s.id}>
+                    <Link
+                      href={href}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                        active
+                          ? "bg-sidebar-accent text-foreground"
+                          : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
+                      )}
+                      title={`${agentName} · ${s.id}`}
+                    >
+                      <span
+                        aria-hidden
+                        title={s.status}
+                        className={cn(
+                          "mt-1.5 size-1.5 shrink-0 rounded-full",
+                          statusDotClass(s.status),
+                        )}
+                      />
+                      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                        <span className="truncate text-foreground">
+                          {sessionLabel(s)}
+                        </span>
+                        <span className="truncate text-[11px] text-muted-foreground/80">
+                          {agentName} · {formatRelative(s.created_at)}
+                        </span>
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        ) : null}
+
+        {/* Agents — each row is collapsible to show its sessions. */}
+        <SectionHeader
+          label="Agents"
+          count={sortedAgents.length}
+          href="/agents"
+          active={pathname === "/agents"}
+        />
+        <ul className="space-y-px">
           {sortedAgents.length === 0 ? (
             <li className="px-2 py-1 text-[11px] text-muted-foreground">
               No agents yet.
@@ -182,73 +308,99 @@ export function Sidebar() {
               const href = `/agents/${a.id}`;
               const active = pathname === href;
               const label = agentLabel(a);
+              const agentSessions = sessionsByAgent.get(a.id) ?? [];
+              const hasSessions = agentSessions.length > 0;
+              const isOpen = expanded.has(a.id) && hasSessions;
+
               return (
                 <li key={a.id}>
-                  <Link
-                    href={href}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                      active
-                        ? "bg-sidebar-accent text-foreground"
-                        : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
+                  <div className="flex items-center gap-0.5">
+                    {hasSessions ? (
+                      <button
+                        type="button"
+                        onClick={() => toggle(a.id)}
+                        aria-label={isOpen ? "Collapse" : "Expand"}
+                        aria-expanded={isOpen}
+                        className="inline-flex h-7 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      >
+                        {isOpen ? (
+                          <ChevronDown className="size-3" aria-hidden />
+                        ) : (
+                          <ChevronRight className="size-3" aria-hidden />
+                        )}
+                      </button>
+                    ) : (
+                      <span className="inline-flex h-7 w-5 shrink-0" aria-hidden />
                     )}
-                    title={label}
-                  >
-                    <span
-                      aria-hidden
-                      className="size-1.5 shrink-0 rounded-full bg-muted-foreground/60"
-                    />
-                    <span className="truncate">{label}</span>
-                  </Link>
-                </li>
-              );
-            })
-          )}
-        </ul>
-
-        {/* Sessions section */}
-        <SectionHeader
-          label="Recent sessions"
-          count={recentSessions.length}
-          href="/sessions"
-          active={pathname === "/sessions"}
-        />
-        <ul className="space-y-px">
-          {recentSessions.length === 0 ? (
-            <li className="px-2 py-1 text-[11px] text-muted-foreground">
-              No sessions yet.
-            </li>
-          ) : (
-            recentSessions.map((s) => {
-              const href = `/sessions/${s.id}`;
-              const active = pathname === href;
-              const agentName = agentNameById.get(s.agent_id);
-              return (
-                <li key={s.id}>
-                  <Link
-                    href={href}
-                    aria-current={active ? "page" : undefined}
-                    className={cn(
-                      "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                      active
-                        ? "bg-sidebar-accent text-foreground"
-                        : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
-                    )}
-                    title={`${agentName ? `${agentName} · ` : ""}${s.id}`}
-                  >
-                    <span
-                      aria-hidden
-                      title={s.status}
+                    <Link
+                      href={href}
+                      aria-current={active ? "page" : undefined}
                       className={cn(
-                        "size-1.5 shrink-0 rounded-full",
-                        statusDotClass(s.status),
+                        "flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                        active
+                          ? "bg-sidebar-accent font-medium text-foreground"
+                          : isOpen
+                            ? "font-medium text-foreground hover:bg-sidebar-accent"
+                            : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
                       )}
-                    />
-                    <span className="truncate">
-                      {agentName ?? <span className="font-mono text-xs">{shortId(s.id)}</span>}
-                    </span>
-                  </Link>
+                      title={label}
+                    >
+                      <AgentAvatar
+                        name={a.name ?? a.id}
+                        pfpUrl={a.pfp_url}
+                        size={20}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{label}</span>
+                      {hasSessions ? (
+                        <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/60">
+                          {agentSessions.length}
+                        </span>
+                      ) : null}
+                    </Link>
+                  </div>
+
+                  {isOpen ? (
+                    <ul className="ml-[26px] mt-1 mb-2 space-y-px">
+                      {agentSessions.map((s) => {
+                        const sHref = `/sessions/${s.id}`;
+                        const sActive = pathname === sHref;
+                        return (
+                          <li key={s.id}>
+                            <Link
+                              href={sHref}
+                              aria-current={sActive ? "page" : undefined}
+                              className={cn(
+                                "flex h-9 items-center gap-2 rounded-md px-2 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                                sActive
+                                  ? "bg-sidebar-accent font-medium text-foreground"
+                                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
+                              )}
+                              title={`${s.id} · ${s.status}`}
+                            >
+                              {sActive ? (
+                                <span
+                                  aria-hidden
+                                  title={s.status}
+                                  className={cn(
+                                    "size-1.5 shrink-0 rounded-full",
+                                    statusDotClass(s.status),
+                                  )}
+                                />
+                              ) : (
+                                <span className="inline-block size-1.5 shrink-0" aria-hidden />
+                              )}
+                              <span className="min-w-0 flex-1 truncate">
+                                {sessionLabel(s)}
+                              </span>
+                              <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground/60">
+                                {formatRelative(s.created_at)}
+                              </span>
+                            </Link>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
                 </li>
               );
             })
@@ -306,7 +458,7 @@ function SectionHeader({ label, count, href, active }: SectionHeaderProps) {
             "flex h-6 items-center gap-2 rounded-md px-2 text-[10px] font-medium uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
             active
               ? "bg-sidebar-accent text-foreground"
-              : "text-muted-foreground hover:text-foreground",
+              : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
           )}
         >
           {inner}

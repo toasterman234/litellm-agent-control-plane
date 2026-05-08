@@ -2,24 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw, Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { AgentAvatar } from "@/components/agent-avatar";
 import {
   AgentRow,
+  ApiError,
   SessionRow,
   listAgents,
   listSessions,
-  ApiError,
 } from "@/lib/api";
 
 interface RowState {
@@ -27,13 +20,20 @@ interface RowState {
   active: boolean;
 }
 
-function formatCreated(iso?: string | null): string {
+function formatRelative(iso?: string | null): string {
   if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const diff = Date.now() - then;
+  if (diff < 0) return "just now";
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  return `${day}d`;
 }
 
 export default function AgentsListPage() {
@@ -55,14 +55,11 @@ export default function AgentsListPage() {
           .filter((s: SessionRow) => s.status === "ready")
           .map((s: SessionRow) => s.agent_id),
       );
-      const next: RowState[] = agents.map((a) => ({
-        agent: a,
-        active: activeAgentIds.has(a.id),
-      }));
-      setRows(next);
+      setRows(
+        agents.map((a) => ({ agent: a, active: activeAgentIds.has(a.id) })),
+      );
     } catch (e) {
-      const msg = e instanceof ApiError ? e.message : (e as Error).message;
-      setError(msg);
+      setError(e instanceof ApiError ? e.message : (e as Error).message);
       setRows([]);
     } finally {
       setLoading(false);
@@ -74,103 +71,106 @@ export default function AgentsListPage() {
   }, [load]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
-      <div className="flex items-center justify-between">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-[22px] font-semibold tracking-tight">Agents</h1>
-          <p className="text-sm tabular-nums text-muted-foreground">
-            {rows.length}
+    <div className="mx-auto w-full max-w-4xl px-6 py-10">
+      <header className="flex items-baseline justify-between">
+        <div>
+          <h1 className="text-[26px] font-semibold tracking-tight leading-none">
+            Agents
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {rows.length} {rows.length === 1 ? "agent" : "agents"}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
             onClick={() => void load()}
             disabled={loading}
             aria-label="Refresh"
+            className="h-8 px-2 text-muted-foreground hover:text-foreground"
           >
-            <RefreshCw className={loading ? "animate-spin" : ""} />
-            Refresh
+            <RefreshCw className={loading ? "size-3.5 animate-spin" : "size-3.5"} />
           </Button>
-          <Button
-            size="sm"
-            onClick={() => router.push("/agents/new")}
-          >
-            <Plus />
-            New Agent
+          <Button size="sm" onClick={() => router.push("/agents/new")}>
+            <Plus className="size-4" />
+            New agent
           </Button>
         </div>
-      </div>
+      </header>
 
       {error ? (
-        <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 font-mono text-xs text-destructive">
+        <div className="mt-6 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 font-mono text-xs text-destructive">
           {error}
         </div>
       ) : null}
 
-      <div className="mt-6 overflow-hidden rounded-lg border bg-card">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-12">Status</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Model</TableHead>
-              <TableHead>Branch</TableHead>
-              <TableHead>ID</TableHead>
-              <TableHead>Created</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.length === 0 && !loading ? (
-              <TableRow className="hover:bg-transparent">
-                <TableCell
-                  colSpan={6}
-                  className="h-32 text-center text-sm text-muted-foreground"
-                >
-                  No agents yet. Click + New Agent to create one.
-                </TableCell>
-              </TableRow>
-            ) : (
-              rows.map(({ agent, active }) => (
-                <TableRow
-                  key={agent.id}
-                  onClick={() => router.push(`/agents/${agent.id}`)}
-                  className="cursor-pointer hover:bg-muted/40"
-                >
-                  <TableCell>
-                    <span
-                      aria-label={active ? "active" : "inactive"}
-                      title={active ? "active" : "inactive"}
-                      className={
-                        "inline-block size-2 rounded-full " +
-                        (active ? "bg-emerald-500" : "bg-muted-foreground/40")
-                      }
-                    />
-                  </TableCell>
-                  <TableCell className="font-medium">
-                    {agent.name ?? <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary" className="font-mono text-[11px]">
-                      {agent.model}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {agent.branch}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {agent.id}
-                  </TableCell>
-                  <TableCell className="tabular-nums text-muted-foreground">
-                    {formatCreated(agent.created_at)}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
+      {rows.length === 0 && !loading ? (
+        <div className="mt-10 rounded-lg border border-dashed bg-card/40 px-6 py-16 text-center">
+          <p className="text-sm text-muted-foreground">No agents yet.</p>
+          <Button
+            size="sm"
+            onClick={() => router.push("/agents/new")}
+            className="mt-4"
+          >
+            <Plus className="size-4" />
+            Create your first agent
+          </Button>
+        </div>
+      ) : (
+        <ul className="mt-8 overflow-hidden rounded-lg border bg-card">
+          {rows.map(({ agent, active }, i) => (
+            <li
+              key={agent.id}
+              onClick={() => router.push(`/agents/${agent.id}`)}
+              className={
+                "flex cursor-pointer items-center gap-4 px-4 py-4 transition-colors hover:bg-muted/50 " +
+                (i > 0 ? "border-t" : "")
+              }
+            >
+              <div className="relative shrink-0">
+                <AgentAvatar
+                  name={agent.name ?? agent.id}
+                  pfpUrl={agent.pfp_url}
+                  size={48}
+                />
+                {active ? (
+                  <span
+                    aria-label="active"
+                    title="active session"
+                    className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full bg-emerald-500 ring-2 ring-card"
+                  />
+                ) : null}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[15px] font-medium">
+                    {agent.name?.trim() || (
+                      <span className="text-muted-foreground">Untitled agent</span>
+                    )}
+                  </span>
+                  <Badge variant="secondary" className="shrink-0 font-mono text-[10px]">
+                    {agent.model}
+                  </Badge>
+                </div>
+                <div className="mt-0.5 truncate text-[13px] text-muted-foreground">
+                  {agent.prompt?.trim() || (
+                    <span className="font-mono text-[11px] text-muted-foreground/70">
+                      {agent.id}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <span className="hidden shrink-0 font-mono text-[12px] text-muted-foreground sm:inline">
+                {agent.branch}
+              </span>
+              <span className="shrink-0 tabular-nums text-[12px] text-muted-foreground">
+                {formatRelative(agent.created_at)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

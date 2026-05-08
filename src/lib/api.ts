@@ -82,8 +82,10 @@ export interface AgentRow {
   id: string;
   name?: string | null;
   model: string;
+  prompt?: string | null;
   template_id: string;
   branch: string;
+  pfp_url?: string | null;
   created_at?: string | null;
 }
 
@@ -256,6 +258,12 @@ export interface CreateAgentRequest {
   branch?: string;
   litellm_api_key?: string;
   litellm_api_base?: string;
+  pfp_url?: string;
+}
+
+export interface UpdateAgentRequest {
+  name?: string;
+  pfp_url?: string;
 }
 
 export function listAgents(): Promise<AgentRow[]> {
@@ -271,6 +279,17 @@ export function getAgent(id: string): Promise<AgentRow> {
 
 export function createAgent(req: CreateAgentRequest): Promise<AgentRow> {
   return api<AgentRow>("POST", "/v1/managed_agents/agents", req);
+}
+
+export function updateAgent(
+  id: string,
+  req: UpdateAgentRequest,
+): Promise<AgentRow> {
+  return api<AgentRow>(
+    "PATCH",
+    `/v1/managed_agents/agents/${encodeURIComponent(id)}`,
+    req,
+  );
 }
 
 // ---------- Sessions ----------

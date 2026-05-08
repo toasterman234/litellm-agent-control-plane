@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { PfpUpload } from "@/components/pfp-upload";
 import {
   ApiError,
   ModelRow,
@@ -28,8 +29,13 @@ import { cn } from "@/lib/utils";
 const DEFAULT_MODEL = "anthropic/claude-haiku-4-5";
 const NAME_MAX = 64;
 
-function templateLabel(t: TemplateRow): string {
-  return t.name?.trim() || t.id;
+function repoShortLabel(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.pathname.replace(/^\//, "").replace(/\.git$/, "") || u.host;
+  } catch {
+    return url;
+  }
 }
 
 export default function NewAgentPage() {
@@ -39,11 +45,12 @@ export default function NewAgentPage() {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [modelQuery, setModelQuery] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [templateId, setTemplateId] = useState("");
   const [branchOverride, setBranchOverride] = useState("");
+  const [pfpUrl, setPfpUrl] = useState<string | null>(null);
 
   const [models, setModels] = useState<ModelRow[]>([]);
   const [templates, setTemplates] = useState<TemplateRow[]>([]);
+  const [templateId, setTemplateId] = useState<string>("");
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [metaError, setMetaError] = useState<string | null>(null);
 
@@ -62,9 +69,9 @@ export default function NewAgentPage() {
         if (cancelled) return;
         setModels(modelsRes);
         setTemplates(templatesRes);
-        // Auto-select the first ready template.
-        const ready = templatesRes.find((t) => t.build_status === "ready");
-        if (ready) setTemplateId(ready.id);
+        // Auto-select the first ready template, but the user can change it.
+        const firstReady = templatesRes.find((t) => t.build_status === "ready");
+        if (firstReady) setTemplateId(firstReady.id);
       } catch (e) {
         if (cancelled) return;
         setMetaError(
@@ -80,6 +87,21 @@ export default function NewAgentPage() {
     };
   }, []);
 
+  const sortedTemplates = useMemo(() => {
+    // Ready templates first, then alphabetical by display label.
+    return [...templates].sort((a, b) => {
+      const aReady = a.build_status === "ready";
+      const bReady = b.build_status === "ready";
+      if (aReady !== bReady) return aReady ? -1 : 1;
+      return (a.name?.trim() || a.id).localeCompare(b.name?.trim() || b.id);
+    });
+  }, [templates]);
+
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === templateId) ?? null,
+    [templates, templateId],
+  );
+
   const sortedModels = useMemo(
     () => [...models].sort((a, b) => a.id.localeCompare(b.id)),
     [models],
@@ -90,25 +112,13 @@ export default function NewAgentPage() {
     return sortedModels.filter((m) => m.id.toLowerCase().includes(q));
   }, [sortedModels, modelQuery]);
 
-  const sortedTemplates = useMemo(
-    () =>
-      [...templates].sort((a, b) =>
-        templateLabel(a).localeCompare(templateLabel(b)),
-      ),
-    [templates],
-  );
-  const selectedTemplate = useMemo(
-    () => templates.find((t) => t.id === templateId) ?? null,
-    [templates, templateId],
-  );
-
   function validate(): string | null {
     const trimmedName = name.trim();
     if (trimmedName.length > NAME_MAX) {
       return `Name must be ${NAME_MAX} characters or fewer.`;
     }
     if (!model.trim()) return "Model is required.";
-    if (!templateId) return "Sandbox template is required.";
+    if (!templateId) return "Pick a sandbox template.";
     return null;
   }
 
@@ -122,6 +132,7 @@ export default function NewAgentPage() {
       return;
     }
 
+    if (!templateId) return;
     setSubmitting(true);
     try {
       const created = await createAgent({
@@ -130,6 +141,7 @@ export default function NewAgentPage() {
         prompt: systemPrompt.trim() || undefined,
         template_id: templateId,
         branch: branchOverride.trim() || undefined,
+        pfp_url: pfpUrl ?? undefined,
       });
       router.push(`/agents/${created.id}`);
     } catch (err) {
@@ -157,6 +169,16 @@ export default function NewAgentPage() {
         <CardContent>
           <form className="space-y-5" onSubmit={onSubmit} noValidate>
             <div className="space-y-1.5">
+              <Label>Profile picture</Label>
+              <PfpUpload
+                name={name}
+                value={pfpUrl}
+                onChange={setPfpUrl}
+                disabled={submitting}
+              />
+            </div>
+
+            <div className="space-y-1.5">
               <Label htmlFor="name">Name (optional)</Label>
               <Input
                 id="name"
@@ -169,23 +191,23 @@ export default function NewAgentPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>Sandbox template</Label>
+              <Label>Sandbox</Label>
               {loadingMeta ? (
                 <p className="text-xs text-muted-foreground">
-                  Loading templates from proxy…
+                  Loading sandboxes from proxy…
                 </p>
               ) : sortedTemplates.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No sandbox templates configured. An admin must create one
-                  first via{" "}
-                  <span className="font-mono">
-                    POST /v1/managed_agents/sandbox-templates
-                  </span>
-                  .
+                <p className="font-mono text-xs text-destructive">
+                  No sandboxes are configured. An admin must run{" "}
+                  <span>POST /v1/managed_agents/sandbox-templates</span> first.
                 </p>
               ) : (
                 <div className="rounded-lg border bg-card">
-                  <ul role="listbox" aria-label="Sandbox templates" className="divide-y">
+                  <ul
+                    role="listbox"
+                    aria-label="Sandbox templates"
+                    className="divide-y"
+                  >
                     {sortedTemplates.map((t) => {
                       const selected = t.id === templateId;
                       const ready = t.build_status === "ready";
@@ -198,8 +220,8 @@ export default function NewAgentPage() {
                             onClick={() => setTemplateId(t.id)}
                             disabled={submitting || !ready}
                             className={cn(
-                              "flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60",
-                              selected && "bg-accent/30",
+                              "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60",
+                              selected && "bg-accent/40",
                             )}
                           >
                             <span
@@ -213,29 +235,35 @@ export default function NewAgentPage() {
                             >
                               {selected ? <Check className="size-3" /> : null}
                             </span>
-                            <span className="flex min-w-0 flex-1 flex-col">
-                              <span className="flex items-center gap-2 truncate text-[13px] text-foreground">
-                                <span>{templateLabel(t)}</span>
-                                <span className="rounded-md border border-border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                                  {t.dockerfile_id}
+                            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <span className="truncate text-[13px] font-medium text-foreground">
+                                {repoShortLabel(t.repo_url)}
+                              </span>
+                              <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                                <span>
+                                  harness:{" "}
+                                  <span className="font-mono text-foreground">
+                                    {t.dockerfile_id}
+                                  </span>
+                                </span>
+                                <span aria-hidden>·</span>
+                                <span className="font-mono">
+                                  {t.default_branch}
                                 </span>
                               </span>
-                              <span className="truncate font-mono text-[11px] text-muted-foreground">
-                                {t.repo_url} · {t.default_branch}
-                              </span>
                             </span>
-                            <span
-                              className={cn(
-                                "shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
-                                ready
-                                  ? "bg-emerald-50 text-emerald-700"
-                                  : t.build_status === "failed"
+                            {!ready ? (
+                              <span
+                                className={cn(
+                                  "shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide",
+                                  t.build_status === "failed"
                                     ? "bg-red-50 text-red-700"
                                     : "bg-amber-50 text-amber-700",
-                              )}
-                            >
-                              {t.build_status}
-                            </span>
+                                )}
+                              >
+                                {t.build_status}
+                              </span>
+                            ) : null}
                           </button>
                         </li>
                       );
@@ -246,7 +274,7 @@ export default function NewAgentPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="branch">Branch override (optional)</Label>
+              <Label htmlFor="branch">Branch (optional)</Label>
               <Input
                 id="branch"
                 value={branchOverride}
@@ -256,12 +284,12 @@ export default function NewAgentPage() {
                     ? `default: ${selectedTemplate.default_branch}`
                     : "default: main"
                 }
-                disabled={submitting}
+                disabled={submitting || !selectedTemplate}
                 className="font-mono text-xs"
               />
               <p className="text-xs text-muted-foreground">
-                Pin this agent to a specific branch of the template&rsquo;s
-                repo. Leave blank to use the template default.
+                Pin this agent to a specific branch of the sandbox&rsquo;s
+                repo. Leave blank to use the default.
               </p>
             </div>
 
