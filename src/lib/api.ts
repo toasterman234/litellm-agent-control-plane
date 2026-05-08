@@ -139,6 +139,21 @@ export interface McpRow {
   status?: string;
 }
 
+/**
+ * One tool exposed by an MCP server, as returned by `/mcp-rest/tools/list`.
+ * The proxy enriches each tool with `mcp_info` so we can group tools by
+ * server in the UI without a second round-trip.
+ */
+export interface McpToolRow {
+  name: string;
+  description?: string;
+  mcp_info?: {
+    server_id?: string;
+    server_name?: string;
+    logo_url?: string;
+  };
+}
+
 // ---------- Errors ----------
 
 interface FastApiValidationItem {
@@ -243,6 +258,17 @@ export function listTemplates(): Promise<TemplateRow[]> {
 
 // ---------- Agents ----------
 
+/**
+ * Per-server tool whitelist. When a server appears in `mcp_servers` but NOT
+ * in `mcp_allowed_tools`, the agent inherits all of that server's tools
+ * (back-compat). When it appears here, the agent is restricted to the
+ * listed tool names only.
+ */
+export interface McpAllowedTools {
+  server_id: string;
+  tools: string[];
+}
+
 export interface CreateAgentRequest {
   name?: string;
   model: string;
@@ -254,12 +280,14 @@ export interface CreateAgentRequest {
   litellm_api_base?: string;
   pfp_url?: string;
   mcp_servers?: string[];
+  mcp_allowed_tools?: McpAllowedTools[];
 }
 
 export interface UpdateAgentRequest {
   name?: string;
   pfp_url?: string;
   mcp_servers?: string[];
+  mcp_allowed_tools?: McpAllowedTools[];
 }
 
 export function listAgents(): Promise<AgentRow[]> {
@@ -394,6 +422,42 @@ export async function listMcps(): Promise<McpRow[]> {
   const rows: McpRow[] = [];
   for (const item of raw) {
     const parsed = parseMcpRow(item);
+    if (parsed) rows.push(parsed);
+  }
+  return rows;
+}
+
+function parseMcpToolRow(value: unknown): McpToolRow | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.name !== "string") return null;
+  const row: McpToolRow = { name: value.name };
+  if (typeof value.description === "string") row.description = value.description;
+  if (isRecord(value.mcp_info)) {
+    const info = value.mcp_info;
+    const out: McpToolRow["mcp_info"] = {};
+    if (typeof info.server_id === "string") out.server_id = info.server_id;
+    if (typeof info.server_name === "string") out.server_name = info.server_name;
+    if (typeof info.logo_url === "string") out.logo_url = info.logo_url;
+    row.mcp_info = out;
+  }
+  return row;
+}
+
+/**
+ * Fetch the tools exposed by a single MCP server. The proxy endpoint also
+ * supports a global "everything I'm allowed to see" mode (no server_id), but
+ * we always scope to one server so a slow/broken server can't block the rest
+ * of the picker.
+ */
+export async function listMcpTools(serverId: string): Promise<McpToolRow[]> {
+  const qs = `?server_id=${encodeURIComponent(serverId)}`;
+  const raw = await api<unknown>("GET", `/mcp-rest/tools/list${qs}`);
+  if (!isRecord(raw)) return [];
+  const tools = raw.tools;
+  if (!Array.isArray(tools)) return [];
+  const rows: McpToolRow[] = [];
+  for (const item of tools) {
+    const parsed = parseMcpToolRow(item);
     if (parsed) rows.push(parsed);
   }
   return rows;
