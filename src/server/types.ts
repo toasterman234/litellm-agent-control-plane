@@ -147,6 +147,57 @@ export interface ApiSession {
   idle_timeout_ms: number;
 }
 
+// Admin / observability — wire shape returned by GET /api/v1/admin/stats.
+// The settings page renders this; keep field names stable so the UI doesn't
+// drift on a backend rename.
+export interface ApiAdminStats {
+  warm_pool: {
+    configured_size: number;
+    max_provisioning: number;
+    ttl_minutes: number;
+    recent_agent_hours: number;
+    counts: {
+      provisioning: number;
+      warm: number;
+      claimed: number;
+      dead: number;
+    };
+    by_agent: Array<{
+      agent_id: string;
+      agent_name: string | null;
+      provisioning: number;
+      warm: number;
+      claimed: number;
+      dead: number;
+      oldest_warm_at: string | null;
+    }>;
+  };
+  sessions: {
+    counts: {
+      creating: number;
+      ready: number;
+      failed: number;
+      dead: number;
+    };
+    by_agent: Array<{
+      agent_id: string;
+      agent_name: string | null;
+      creating: number;
+      ready: number;
+    }>;
+  };
+  agents: {
+    total: number;
+  };
+  runtime: {
+    aws_region: string;
+    aws_cluster: string;
+    task_definition_arn: string;
+    container_port: number;
+    reconcile_interval_seconds: number;
+  };
+}
+
 export interface ApiDockerfile {
   id: string;
   container_port: number;
