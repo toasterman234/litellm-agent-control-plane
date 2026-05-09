@@ -566,6 +566,12 @@ function MessageBlock({
   return <AssistantBlock msg={msg} />;
 }
 
+// Cap any single message at ~60% of the viewport so an oversized prompt or a
+// huge assistant reply (e.g. the agent dumping a whole file) doesn't shove
+// every other message off-screen. The block itself scrolls internally; the
+// page keeps scrolling past it.
+const MESSAGE_MAX_HEIGHT = "60vh";
+
 function UserPromptBlock({
   content,
   emphasized,
@@ -575,9 +581,10 @@ function UserPromptBlock({
 }) {
   return (
     <div
-      className={`bg-[#f9f9f9] border border-gray-100 rounded-xl p-4 text-[14px] text-gray-700 leading-relaxed whitespace-pre-wrap ${
+      className={`bg-[#f9f9f9] border border-gray-100 rounded-xl p-4 text-[14px] text-gray-700 leading-relaxed whitespace-pre-wrap overflow-y-auto ${
         emphasized ? "shadow-sm" : ""
       }`}
+      style={{ maxHeight: MESSAGE_MAX_HEIGHT }}
     >
       {content}
     </div>
@@ -598,7 +605,10 @@ function AssistantBlock({ msg }: { msg: LocalMessage }) {
   });
 
   return (
-    <div className="flex flex-col gap-3">
+    <div
+      className="flex flex-col gap-3 overflow-y-auto"
+      style={{ maxHeight: MESSAGE_MAX_HEIGHT }}
+    >
       {failed && msg.text ? (
         <div
           className="sessions-md text-[14px] leading-relaxed"
