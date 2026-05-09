@@ -99,3 +99,11 @@ function LoginForm() {
     </div>
   );
 }
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
+  );
+}

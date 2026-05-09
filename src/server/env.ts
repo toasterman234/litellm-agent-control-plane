@@ -62,6 +62,14 @@ function collectContainerEnvPassthrough(
 }
 
 function parseEnv(): ServerEnv {
+  // During `next build` most hosting platforms (Render, Fly, Railway, etc.)
+  // don't expose runtime env vars to the build container, so collecting page
+  // data for API routes that import this module would always crash. Skip
+  // validation in the build phase — runtime imports re-evaluate this file
+  // with the real env in place.
+  if (process.env.NEXT_PHASE === "phase-production-build") {
+    return {} as ServerEnv;
+  }
   const parsed = EnvSchema.safeParse(process.env);
   if (!parsed.success) {
     const issues = parsed.error.issues
