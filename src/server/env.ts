@@ -45,6 +45,21 @@ const EnvSchema = z.object({
   LITELLM_API_KEY: z.string().min(1),
   CONTAINER_PORT: z.coerce.number().int().positive().default(4096),
   RECONCILE_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+
+  // Warm pool — pre-provisioned Fargate tasks waiting to be claimed by a
+  // session create. Default of 2 keeps two tasks ready for the most
+  // recently active agent so users get sub-5s session creates out of the
+  // box (cost ≈ $32/mo at 512 CPU / 1024 mem). Set to 0 to disable.
+  WARM_POOL_SIZE: z.coerce.number().int().nonnegative().default(2),
+  WARM_POOL_MAX_PROVISIONING: z.coerce.number().int().positive().default(2),
+  WARM_POOL_TTL_MINUTES: z.coerce.number().int().positive().default(30),
+  // Ignore agents whose last session is older than this — don't keep
+  // warm tasks around for an agent that hasn't been used in a long time.
+  WARM_POOL_RECENT_AGENT_HOURS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(24),
 });
 
 function collectContainerEnvPassthrough(
