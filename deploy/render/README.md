@@ -40,6 +40,13 @@ kubeconfig:
 | GCP   | (similar GKE script — see [`../gcp/`](../gcp/))     |
 | Other | install [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) on any cluster, then `kubectl config view --minify --flatten | base64` |
 
+## Automation
+
+[`AGENTS.md`](AGENTS.md) is an agent-friendly handover for scripted
+deploys (LLM agents, CI). It enumerates inputs, the exact Render API
+shapes, env contract, verification steps, and the failure modes worth
+knowing about before you start.
+
 ## Gotchas
 
 - **Egress is unpinned.** If your cluster apiserver / NodePort range is
@@ -50,3 +57,16 @@ kubeconfig:
   before encoding.
 - **First deploy will fail until you fill the `sync: false` vars.** That's
   expected — Render kicks off a build immediately, redeploy after pasting.
+- **`npm ci` under `NODE_ENV=production` skips devDependencies.** The
+  build commands in [`render.yaml`](../../render.yaml) pass
+  `--include=dev` to keep Tailwind / Turbopack / tsx available. Don't
+  drop the flag.
+- **EKS service-account tokens expire after 24h.** Re-run
+  [`bin/eks-up.sh`](../../bin/eks-up.sh) and `PUT` the new
+  `KUBE_CONFIG_B64` onto both Render services on a daily cron. Or move
+  to IRSA if you can.
+- **Stale `ready` rows poison the first request after re-pointing the
+  cluster.** If the database previously served a different sandbox
+  runtime (local kind, prior cluster), `Session` rows will have
+  unreachable `sandbox_url` fields. The reconciler ghost-reaps them
+  within 60s.

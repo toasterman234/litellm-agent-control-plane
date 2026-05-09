@@ -26,7 +26,10 @@ services:
     name: litellm-agents-web
     runtime: node
     plan: starter
-    buildCommand: npm ci && npx prisma generate && npm run build
+    # `--include=dev` is critical: NODE_ENV=production below makes
+    # `npm ci` skip devDependencies by default, which then breaks
+    # `next build` (Tailwind / Turbopack devDeps).
+    buildCommand: npm ci --include=dev && npx prisma generate && npm run build
     preDeployCommand: npx prisma migrate deploy
     startCommand: |
       set -e
@@ -79,7 +82,9 @@ services:
     name: litellm-agents-worker
     runtime: node
     plan: starter
-    buildCommand: npm ci && npx prisma generate
+    # `--include=dev` mirrors the web service — tsx (devDep) is needed
+    # at runtime by `npm run worker`.
+    buildCommand: npm ci --include=dev && npx prisma generate
     startCommand: |
       set -e
       if [ -n "$KUBE_CONFIG_B64" ]; then

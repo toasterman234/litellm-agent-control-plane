@@ -37,8 +37,19 @@ command -v openssl  >/dev/null || err "openssl not installed"
 : "${FLY_API_TOKEN:?FLY_API_TOKEN required}"
 : "${LITELLM_API_BASE:?LITELLM_API_BASE required}"
 : "${LITELLM_API_KEY:?LITELLM_API_KEY required}"
-: "${K8S_HARNESS_IMAGE:?K8S_HARNESS_IMAGE required (e.g. ghcr.io/you/opencode-sandbox:latest)}"
 export FLY_API_TOKEN
+
+# When K8S_HARNESS_IMAGE is unset, we build the harness image locally and
+# import it into the k3s machine's containerd via SSH. K3s nodes can't
+# pull from private registries without imagePullSecrets, and pushing to a
+# public registry adds a Docker Hub / GHCR auth step the user shouldn't
+# need for a self-contained Fly deploy.
+LOCAL_BUILD=0
+if [ -z "${K8S_HARNESS_IMAGE:-}" ]; then
+  LOCAL_BUILD=1
+  K8S_HARNESS_IMAGE="docker.io/library/opencode-sandbox:fly"
+fi
+export K8S_HARNESS_IMAGE
 
 flyctl auth whoami >/dev/null 2>&1 || err "flyctl token rejected"
 
@@ -56,13 +67,31 @@ else
 fi
 
 # ---- 2. Sandbox cluster (k3s) -------------------------------------------
+K3S_APP="${K3S_APP:-litellm-agents-k3s}"
 if [ -z "${KUBE_CONFIG_B64:-}" ] || [ -z "${K8S_NODE_HOST:-}" ]; then
   info "spinning k3s sandbox cluster (bin/k3s-up.sh)"
   KUBE_CFG_FILE=$(mktemp)
   trap 'rm -f "$KUBE_CFG_FILE"' EXIT
-  bin/k3s-up.sh > "$KUBE_CFG_FILE"
+  FLY_APP="$K3S_APP" bin/k3s-up.sh > "$KUBE_CFG_FILE"
   KUBE_CONFIG_B64=$(cat "$KUBE_CFG_FILE")
-  K8S_NODE_HOST="${FLY_APP:-litellm-agents-k3s}.fly.dev"
+  K8S_NODE_HOST="$K3S_APP.fly.dev"
+fi
+
+# ---- 2b. Build + import harness image into k3s --------------------------
+if [ "$LOCAL_BUILD" = 1 ]; then
+  info "building harness image: $K8S_HARNESS_IMAGE"
+  docker build --platform linux/amd64 \
+    -t "$K8S_HARNESS_IMAGE" \
+    harnesses/opencode/
+
+  info "transferring image to k3s machine (~30s)"
+  TAR=$(mktemp)
+  docker save "$K8S_HARNESS_IMAGE" -o "$TAR"
+  # k3s ships a bundled containerd; `k3s ctr` pipes load the image
+  # directly into it. We stream the tar over stdin so we don't have to
+  # land it on disk in the Fly machine first.
+  flyctl ssh console -a "$K3S_APP" -C "k3s ctr images import -" < "$TAR"
+  rm -f "$TAR"
 fi
 
 # ---- 3. Web app ----------------------------------------------------------

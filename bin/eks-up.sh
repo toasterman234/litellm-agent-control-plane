@@ -40,6 +40,13 @@ err()  { printf "[eks-up] error: %s\n" "$*" >&2; exit 1; }
 info() { printf "[eks-up] %s\n" "$*" >&2; }   # logs go to stderr; only the
                                               # base64 kubeconfig hits stdout
 
+# Run any AWS CLI / eksctl / kubectl invocation with stdout redirected to
+# stderr — these tools occasionally leak their own progress output to
+# stdout, which would corrupt the base64 kubeconfig the caller captures
+# at the end. Wrap external commands that aren't producing the final
+# stdout payload.
+silent() { "$@" >&2; }
+
 # ---- 1. Prereqs ----------------------------------------------------------
 command -v aws     >/dev/null || err "aws cli not installed"
 command -v eksctl  >/dev/null || err "eksctl not installed (brew install eksctl)"
@@ -56,7 +63,7 @@ if eksctl get cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
   info "cluster '$CLUSTER_NAME' already exists; reusing"
 else
   info "creating EKS cluster '$CLUSTER_NAME' in $AWS_REGION (~15 min)"
-  eksctl create cluster \
+  silent eksctl create cluster \
     --name "$CLUSTER_NAME" \
     --region "$AWS_REGION" \
     --version "$K8S_VERSION" \
@@ -101,11 +108,22 @@ kubectl create clusterrolebinding "${SA_NAME}-binding" \
   --serviceaccount="${SA_NS}:${SA_NAME}" \
   --dry-run=client -o yaml | kubectl apply -f - >&2
 
-# Mint a long-lived (10y) token. Requires k8s 1.24+.
-TOKEN=$(kubectl create token "$SA_NAME" -n "$SA_NS" --duration=87600h)
-APISERVER=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.server}')
-CA_DATA=$(kubectl config view --raw --flatten -o json \
-            | jq -r '.clusters[0].cluster["certificate-authority-data"]')
+# Mint a service-account token. EKS caps duration at 24h regardless of
+# what we request — projected service-account tokens don't honor longer
+# expirations. Operators should re-run this script (it's idempotent on
+# the SA + binding) on a schedule, or move to IRSA for in-cluster
+# workloads.
+TOKEN=$(kubectl create token "$SA_NAME" -n "$SA_NS" --duration=24h)
+
+# Extract the cluster's server + CA from the AWS API directly. We cannot
+# rely on `kubectl config view --raw -o jsonpath='{.clusters[0]...}'` —
+# the host's kubeconfig may have multiple clusters from prior eksctl /
+# `aws eks update-kubeconfig` runs, and `[0]` is whichever happens to be
+# first. Pulling from EKS guarantees the right cluster.
+APISERVER=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
+              --query 'cluster.endpoint' --output text)
+CA_DATA=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
+              --query 'cluster.certificateAuthority.data' --output text)
 
 KUBECONFIG_BODY=$(cat <<EOF
 apiVersion: v1
