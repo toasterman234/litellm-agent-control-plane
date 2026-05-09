@@ -21,6 +21,7 @@ import {
   Loader2,
   ChevronDown,
   Wrench,
+  RotateCw,
 } from "lucide-react";
 import {
   ApiError,
@@ -28,6 +29,7 @@ import {
   HarnessMessage,
   HarnessMessagePart,
   SessionRow,
+  api,
   getAgent,
   getSession,
   listSessionMessages,
@@ -89,6 +91,8 @@ export default function SessionThreadView() {
   const [sending, setSending] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [restarting, setRestarting] = useState<boolean>(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -145,6 +149,28 @@ export default function SessionThreadView() {
   useEffect(() => {
     void loadSession();
   }, [loadSession]);
+
+  // Restart a dead/failed session. The backend POST takes 60-120s while a
+  // fresh Fargate task spins up; keep the UI responsive (the button shows a
+  // spinner) and re-fetch the session once it returns so the new ready state
+  // and replayed thread land naturally.
+  const handleRestart = useCallback(async () => {
+    if (!sessionId || restarting) return;
+    setRestarting(true);
+    setRestartError(null);
+    try {
+      await api<unknown>(
+        "POST",
+        `/v1/managed_agents/sessions/${encodeURIComponent(sessionId)}/restart`,
+      );
+      await loadSession();
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : (e as Error).message;
+      setRestartError(msg);
+    } finally {
+      setRestarting(false);
+    }
+  }, [sessionId, restarting, loadSession]);
 
   // Refresh session status periodically so creating→ready transitions are
   // visible in the header and the composer enables when the harness is up.
@@ -255,6 +281,9 @@ export default function SessionThreadView() {
         handleKeyDown={handleKeyDown}
         messagesEndRef={messagesEndRef}
         scrollContainerRef={scrollContainerRef}
+        restarting={restarting}
+        restartError={restartError}
+        handleRestart={handleRestart}
       />
     </div>
   );
@@ -280,6 +309,9 @@ interface MainPanelProps {
   handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  restarting: boolean;
+  restartError: string | null;
+  handleRestart: () => void;
 }
 
 function MainPanel({
@@ -298,10 +330,14 @@ function MainPanel({
   handleKeyDown,
   messagesEndRef,
   scrollContainerRef,
+  restarting,
+  restartError,
+  handleRestart,
 }: MainPanelProps) {
   const sessionShortId = session?.id ? session.id.slice(0, 8) : "—";
   const statusLabel = session?.status ?? "unknown";
   const isReady = session?.status === "ready";
+  const isDead = statusLabel === "dead" || statusLabel === "failed";
 
   return (
     <div className="flex-1 flex flex-col h-full min-h-0 bg-white overflow-hidden">
@@ -340,7 +376,7 @@ function MainPanel({
                 ? "bg-emerald-500"
                 : statusLabel === "creating"
                   ? "bg-amber-500"
-                  : statusLabel === "failed"
+                  : statusLabel === "failed" || statusLabel === "dead"
                     ? "bg-red-500"
                     : "bg-gray-300"
             }`}
@@ -372,6 +408,41 @@ function MainPanel({
           {!loading && messages.length === 0 && isReady && (
             <div className="text-[13px] text-gray-400">
               Sandbox is ready. Send a message below.
+            </div>
+          )}
+
+          {isDead && (
+            <div className="border border-gray-200 bg-gray-50 rounded-lg px-4 py-3 flex items-start gap-3">
+              <div className="flex-1 text-[13px] text-gray-700 leading-relaxed">
+                Session ended (
+                <span className="mono text-[12px] text-gray-500">
+                  {statusLabel}
+                </span>
+                ) — prior conversation was preserved.
+                {restartError && (
+                  <div className="mono text-[11px] text-red-700 mt-1">
+                    {restartError}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleRestart}
+                disabled={restarting}
+                className="shrink-0 inline-flex items-center gap-1.5 border border-gray-300 bg-white text-[13px] text-gray-700 rounded-md px-3 py-1.5 hover:bg-gray-100 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {restarting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Restarting…
+                  </>
+                ) : (
+                  <>
+                    <RotateCw className="w-3.5 h-3.5" />
+                    Restart session
+                  </>
+                )}
+              </button>
             </div>
           )}
 

@@ -469,6 +469,25 @@ export function deleteSession(id: string): Promise<{ id: string; status: string 
   );
 }
 
+/**
+ * Respawn a Fargate task for a `failed` / `dead` session and replay the
+ * persisted opencode history as the new harness session's first user
+ * message. As slow as `spawnSession` (50–90s typical) since it goes through
+ * the same RunTask → wait-for-IP → wait-for-harness path. Returns the
+ * updated session row in the same shape as `getSession`.
+ */
+export function restartSession(
+  id: string,
+  init?: ApiInit,
+): Promise<SessionRow> {
+  return api<SessionRow>(
+    "POST",
+    `/v1/managed_agents/sessions/${encodeURIComponent(id)}/restart`,
+    undefined,
+    init,
+  );
+}
+
 // ---------- Session messages (passthrough to harness) ----------
 
 export interface SendMessageRequest {

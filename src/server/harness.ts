@@ -118,6 +118,27 @@ export async function harnessListMessages(opts: {
   return data as HarnessMessage[];
 }
 
+/**
+ * Render a persisted opencode thread (the `[{info, parts}, ...]` shape from
+ * `harnessListMessages`) into a single text blob suitable for replaying as
+ * the first user message of a restarted session.
+ *
+ * The opencode harness has no import endpoint, so replay must go through
+ * `POST /session/:id/message` as a text part. We dump the full message array
+ * as pretty-printed JSON inside `<previous_session_history><msgs>...</msgs>`
+ * tags so the model receives a lossless record of the prior session and can
+ * interpret it as context rather than a fresh user request.
+ */
+export function formatHistoryAsText(msgs: HarnessMessage[]): string {
+  return [
+    "<previous_session_history>",
+    "<msgs>",
+    JSON.stringify(msgs, null, 2),
+    "</msgs>",
+    "</previous_session_history>",
+  ].join("\n");
+}
+
 export async function harnessSendMessage(
   opts: HarnessSendMessageOpts,
 ): Promise<HarnessMessageResponse> {
