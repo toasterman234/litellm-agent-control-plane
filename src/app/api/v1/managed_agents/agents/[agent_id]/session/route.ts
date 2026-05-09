@@ -52,9 +52,13 @@ interface BringUpResult {
 async function bringUpSession(
   agent: AgentRow,
   session_id: string,
-  body: { initial_prompt?: string; title?: string },
+  body: { initial_prompt?: string; title?: string; env_vars?: Record<string, string> },
 ): Promise<BringUpResult> {
-  const { task_arn } = await runTask({ agent, session_id });
+  const { task_arn } = await runTask({
+    agent,
+    session_id,
+    env_vars: body.env_vars,
+  });
   await prisma.session.update({
     where: { session_id },
     data: { task_arn },

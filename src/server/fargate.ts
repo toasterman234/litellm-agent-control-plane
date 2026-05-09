@@ -86,7 +86,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function buildContainerEnv(opts: RunTaskOpts): KeyValuePair[] {
-  const { agent } = opts;
+  const { agent, env_vars } = opts;
   const base: Record<string, string> = {
     REPO_URL: agent.repo_url ?? env.PREINSTALLED_GITHUB_REPO,
     BRANCH: agent.branch,
@@ -96,10 +96,13 @@ function buildContainerEnv(opts: RunTaskOpts): KeyValuePair[] {
     AGENT_PROMPT: agent.prompt ?? "",
     PORT: String(agent.container_port),
   };
-  // Passthrough takes lower priority than the explicit keys above so a
-  // user can't accidentally clobber required runtime config.
+  // Precedence (lowest to highest): server-wide passthrough -> per-session
+  // env_vars -> required base. The route layer already rejects per-session
+  // keys that would collide with `base`, but the spread order here is the
+  // last line of defence — required runtime config wins regardless.
   const merged: Record<string, string> = {
     ...env.containerEnvPassthrough,
+    ...(env_vars ?? {}),
     ...base,
   };
   return Object.entries(merged).map(([name, value]) => ({ name, value }));
