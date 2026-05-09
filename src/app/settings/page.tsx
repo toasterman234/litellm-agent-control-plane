@@ -2,62 +2,208 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { RefreshCw } from "lucide-react";
+import { ChevronDown, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { AdminStats, ApiError, getAdminStats } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const POLL_INTERVAL_MS = 5000;
 
-function formatRelative(iso?: string | null): string {
-  if (!iso) return "—";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return iso;
-  const diff = Date.now() - then;
-  if (diff < 0) return "just now";
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
+type Health = "healthy" | "warming" | "drained" | "idle";
+
+interface HealthSpec {
+  label: string;
+  dotClass: string;
+  textClass: string;
+}
+
+const HEALTH: Record<Health, HealthSpec> = {
+  healthy: {
+    label: "Healthy",
+    dotClass: "bg-emerald-500",
+    textClass: "text-emerald-700 dark:text-emerald-400",
+  },
+  warming: {
+    label: "Warming up",
+    dotClass: "bg-amber-500",
+    textClass: "text-amber-700 dark:text-amber-400",
+  },
+  drained: {
+    label: "Drained",
+    dotClass: "bg-red-500",
+    textClass: "text-red-700 dark:text-red-400",
+  },
+  idle: {
+    label: "Idle",
+    dotClass: "bg-muted-foreground",
+    textClass: "text-muted-foreground",
+  },
+};
+
+function poolHealth(stats: AdminStats): { health: Health; subtitle: string } {
+  const wp = stats.warm_pool;
+  if (wp.configured_size === 0) {
+    return { health: "idle", subtitle: "Warm pool disabled" };
+  }
+  if (wp.counts.warm >= wp.configured_size) {
+    return {
+      health: "healthy",
+      subtitle: `Next session create: <5s`,
+    };
+  }
+  if (wp.counts.warm + wp.counts.provisioning >= wp.configured_size) {
+    return {
+      health: "warming",
+      subtitle: `${wp.counts.provisioning} provisioning · ~40s to ready`,
+    };
+  }
+  if (wp.counts.warm === 0) {
+    return {
+      health: "drained",
+      subtitle: "Next session create: ~40s cold start",
+    };
+  }
+  return {
+    health: "warming",
+    subtitle: `Below target — backfilling`,
+  };
+}
+
+function sandboxHealth(stats: AdminStats): {
+  health: Health;
+  subtitle: string;
+} {
+  const sx = stats.sessions;
+  const live = sx.counts.creating + sx.counts.ready;
+  if (live === 0) {
+    return { health: "idle", subtitle: "No live sandboxes" };
+  }
+  if (sx.counts.creating > 0) {
+    return {
+      health: "warming",
+      subtitle: `${sx.counts.creating} still booting`,
+    };
+  }
+  return {
+    health: "healthy",
+    subtitle: `Serving requests`,
+  };
+}
+
+interface HealthTileProps {
+  question: string;
+  health: Health;
+  metric: string;
+  metricSub?: string;
+  subtitle: string;
+}
+
+function HealthTile({
+  question,
+  health,
+  metric,
+  metricSub,
+  subtitle,
+}: HealthTileProps) {
+  const spec = HEALTH[health];
+  return (
+    <div className="rounded-lg border border-border bg-card p-5">
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">
+        {question}
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <span
+          aria-hidden
+          className={cn("size-2 rounded-full", spec.dotClass)}
+        />
+        <span className={cn("text-sm font-medium", spec.textClass)}>
+          {spec.label}
+        </span>
+      </div>
+      <div className="mt-3 flex items-baseline gap-2">
+        <span className="text-4xl font-semibold tabular-nums tracking-tight">
+          {metric}
+        </span>
+        {metricSub ? (
+          <span className="text-sm text-muted-foreground">{metricSub}</span>
+        ) : null}
+      </div>
+      <div className="mt-2 text-sm text-muted-foreground">{subtitle}</div>
+    </div>
+  );
+}
+
+interface PoolBarProps {
+  warm: number;
+  provisioning: number;
+  target: number;
+}
+
+/**
+ * Single horizontal bar visualization. Solid green = ready, hatched amber =
+ * provisioning, neutral fill = empty slots up to target. One glance answers
+ * "do I have enough warm containers and what's coming next?".
+ */
+function PoolBar({ warm, provisioning, target }: PoolBarProps) {
+  if (target === 0) {
+    return (
+      <div className="text-xs text-muted-foreground">
+        Warm pool disabled (WARM_POOL_SIZE=0).
+      </div>
+    );
+  }
+  const total = Math.max(target, warm + provisioning);
+  const warmPct = (warm / total) * 100;
+  const provPct = (provisioning / total) * 100;
+  const targetPct = (target / total) * 100;
+  return (
+    <div>
+      <div className="relative h-3 w-full overflow-hidden rounded-full bg-muted">
+        {warmPct > 0 ? (
+          <div
+            className="absolute inset-y-0 left-0 bg-emerald-500"
+            style={{ width: `${warmPct}%` }}
+            aria-hidden
+          />
+        ) : null}
+        {provPct > 0 ? (
+          <div
+            className="absolute inset-y-0 bg-amber-400"
+            style={{ left: `${warmPct}%`, width: `${provPct}%` }}
+            aria-hidden
+          />
+        ) : null}
+        {/* target marker — only render if we're over-provisioned */}
+        {targetPct < 100 ? (
+          <div
+            className="absolute inset-y-0 w-px bg-foreground/40"
+            style={{ left: `${targetPct}%` }}
+            aria-hidden
+          />
+        ) : null}
+      </div>
+      <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="size-2 rounded-sm bg-emerald-500" /> Warm{" "}
+          <span className="tabular-nums text-foreground">{warm}</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="size-2 rounded-sm bg-amber-400" /> Provisioning{" "}
+          <span className="tabular-nums text-foreground">{provisioning}</span>
+        </span>
+        <span className="ml-auto">
+          Target{" "}
+          <span className="tabular-nums text-foreground">{target}</span>
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function maskArn(arn: string): string {
-  // Task definition ARNs include the AWS account ID. Show enough to
-  // identify which task def revision is wired up without leaking it.
   if (arn.length < 24) return arn;
   return `${arn.slice(0, 16)}…${arn.slice(-12)}`;
-}
-
-interface StatCardProps {
-  label: string;
-  value: string | number;
-  hint?: string;
-  tone?: "default" | "warn" | "ok";
-}
-
-function StatCard({ label, value, hint, tone = "default" }: StatCardProps) {
-  const toneClass =
-    tone === "warn"
-      ? "text-amber-600 dark:text-amber-500"
-      : tone === "ok"
-        ? "text-emerald-600 dark:text-emerald-500"
-        : "text-foreground";
-  return (
-    <div className="rounded-md border border-border bg-card p-4">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className={`mt-1 text-2xl font-semibold tabular-nums ${toneClass}`}>
-        {value}
-      </div>
-      {hint ? (
-        <div className="mt-1 text-xs text-muted-foreground">{hint}</div>
-      ) : null}
-    </div>
-  );
 }
 
 export default function SettingsPage() {
@@ -65,6 +211,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const load = useCallback(async (background = false) => {
     if (!background) setLoading(true);
@@ -93,28 +240,16 @@ export default function SettingsPage() {
     return () => clearInterval(interval);
   }, [load]);
 
-  const wp = stats?.warm_pool;
-  const sx = stats?.sessions;
-  const rt = stats?.runtime;
-
-  // Pool depth at a glance — color the headline number based on whether
-  // we're at target, partially provisioned, or empty.
-  const poolHealthTone: StatCardProps["tone"] = !wp
-    ? "default"
-    : wp.counts.warm >= wp.configured_size
-      ? "ok"
-      : wp.counts.warm + wp.counts.provisioning >= wp.configured_size
-        ? "default"
-        : "warn";
+  const pool = stats ? poolHealth(stats) : null;
+  const sand = stats ? sandboxHealth(stats) : null;
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
+    <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Settings</h1>
           <p className="text-sm text-muted-foreground">
-            Live snapshot of the warm pool and active sandboxes. Polls every
-            5s.
+            Capacity at a glance · polls every 5s
           </p>
         </div>
         <Button
@@ -124,7 +259,10 @@ export default function SettingsPage() {
           disabled={refreshing}
         >
           <RefreshCw
-            className={`mr-2 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+            className={cn(
+              "mr-2 h-3.5 w-3.5",
+              refreshing && "animate-spin",
+            )}
           />
           Refresh
         </Button>
@@ -140,259 +278,218 @@ export default function SettingsPage() {
         <div className="text-sm text-muted-foreground">Loading…</div>
       ) : null}
 
-      {stats ? (
-        <div className="space-y-8">
-          {/* Warm pool */}
-          <section>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Warm pool
-            </h2>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <StatCard
-                label="Warm (ready to claim)"
-                value={wp?.counts.warm ?? 0}
-                hint={`target ${wp?.configured_size ?? 0}`}
-                tone={poolHealthTone}
-              />
-              <StatCard
-                label="Provisioning"
-                value={wp?.counts.provisioning ?? 0}
-                hint={`max concurrent ${wp?.max_provisioning ?? 0}`}
-              />
-              <StatCard
-                label="Claimed (in-flight)"
-                value={wp?.counts.claimed ?? 0}
-                hint="brief — usually 0"
-              />
-              <StatCard
-                label="Dead (cleanup pending)"
-                value={wp?.counts.dead ?? 0}
-                hint="reaped each tick"
-                tone={(wp?.counts.dead ?? 0) > 5 ? "warn" : "default"}
-              />
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4 text-xs text-muted-foreground">
-              <div>
-                <span className="font-mono">WARM_POOL_SIZE</span> ={" "}
-                <span className="text-foreground">
-                  {wp?.configured_size ?? 0}
-                </span>
-              </div>
-              <div>
-                <span className="font-mono">MAX_PROVISIONING</span> ={" "}
-                <span className="text-foreground">
-                  {wp?.max_provisioning ?? 0}
-                </span>
-              </div>
-              <div>
-                <span className="font-mono">TTL_MINUTES</span> ={" "}
-                <span className="text-foreground">{wp?.ttl_minutes ?? 0}</span>
-              </div>
-              <div>
-                <span className="font-mono">RECENT_AGENT_HOURS</span> ={" "}
-                <span className="text-foreground">
-                  {wp?.recent_agent_hours ?? 0}
-                </span>
-              </div>
-            </div>
+      {stats && pool && sand ? (
+        <>
+          {/* The two questions */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <HealthTile
+              question="Enough warm containers?"
+              health={pool.health}
+              metric={`${stats.warm_pool.counts.warm}`}
+              metricSub={`/ ${stats.warm_pool.configured_size} target`}
+              subtitle={pool.subtitle}
+            />
+            <HealthTile
+              question="Enough sandboxes?"
+              health={sand.health}
+              metric={`${stats.sessions.counts.ready + stats.sessions.counts.creating}`}
+              metricSub="live"
+              subtitle={sand.subtitle}
+            />
+          </div>
 
-            {wp && wp.by_agent.length > 0 ? (
-              <div className="mt-4 overflow-x-auto rounded-md border border-border">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-medium">
-                        Agent
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        Warm
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        Provisioning
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        Claimed
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        Dead
-                      </th>
-                      <th className="px-3 py-2 text-left font-medium">
-                        Oldest warm
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {wp.by_agent.map((row) => (
-                      <tr key={row.agent_id} className="border-t border-border">
-                        <td className="px-3 py-2">
-                          <Link
-                            href={`/agents/${row.agent_id}`}
-                            className="hover:underline"
+          {/* Single supporting visual */}
+          <div className="mt-6 rounded-lg border border-border bg-card p-5">
+            <div className="mb-3 text-xs uppercase tracking-wide text-muted-foreground">
+              Warm pool capacity
+            </div>
+            <PoolBar
+              warm={stats.warm_pool.counts.warm}
+              provisioning={stats.warm_pool.counts.provisioning}
+              target={stats.warm_pool.configured_size}
+            />
+          </div>
+
+          {/* Everything else folded behind a disclosure. */}
+          <details
+            className="mt-6 rounded-lg border border-border bg-card"
+            open={detailsOpen}
+            onToggle={(e) =>
+              setDetailsOpen((e.target as HTMLDetailsElement).open)
+            }
+          >
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3 text-sm font-medium text-muted-foreground hover:text-foreground">
+              <ChevronDown
+                className={cn(
+                  "size-3.5 transition-transform",
+                  !detailsOpen && "-rotate-90",
+                )}
+                aria-hidden
+              />
+              Details
+              <span className="ml-auto text-xs font-normal text-muted-foreground">
+                per-agent · runtime · knobs
+              </span>
+            </summary>
+            <div className="space-y-6 border-t border-border px-5 py-5 text-sm">
+              {/* Per-agent warm pool */}
+              {stats.warm_pool.by_agent.length > 0 ? (
+                <section>
+                  <h3 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
+                    Warm pool by agent
+                  </h3>
+                  <div className="overflow-x-auto rounded-md border border-border">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium">
+                            Agent
+                          </th>
+                          <th className="px-3 py-2 text-right font-medium">
+                            Warm
+                          </th>
+                          <th className="px-3 py-2 text-right font-medium">
+                            Provisioning
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stats.warm_pool.by_agent.map((row) => (
+                          <tr
+                            key={row.agent_id}
+                            className="border-t border-border"
                           >
-                            {row.agent_name ?? (
-                              <span className="font-mono text-xs text-muted-foreground">
-                                {row.agent_id.slice(0, 8)}
-                              </span>
-                            )}
-                          </Link>
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {row.warm}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                          {row.provisioning}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                          {row.claimed}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                          {row.dead}
-                        </td>
-                        <td className="px-3 py-2 text-xs text-muted-foreground">
-                          {formatRelative(row.oldest_warm_at)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-muted-foreground">
-                No warm tasks. Either{" "}
-                <span className="font-mono">WARM_POOL_SIZE=0</span>, no agent
-                has been used in the last{" "}
-                {wp?.recent_agent_hours ?? 0}h, or the pool just turned over.
-              </p>
-            )}
-          </section>
+                            <td className="px-3 py-2">
+                              <Link
+                                href={`/agents/${row.agent_id}`}
+                                className="hover:underline"
+                              >
+                                {row.agent_name ?? (
+                                  <span className="font-mono text-xs text-muted-foreground">
+                                    {row.agent_id.slice(0, 8)}
+                                  </span>
+                                )}
+                              </Link>
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums">
+                              {row.warm}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                              {row.provisioning}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
 
-          {/* Sessions */}
-          <section>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Sandboxes (live sessions)
-            </h2>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <StatCard
-                label="Ready"
-                value={sx?.counts.ready ?? 0}
-                hint="serving requests"
-                tone="ok"
-              />
-              <StatCard
-                label="Creating"
-                value={sx?.counts.creating ?? 0}
-                hint="still booting"
-              />
-              <StatCard
-                label="Failed"
-                value={sx?.counts.failed ?? 0}
-                hint="terminal"
-                tone={(sx?.counts.failed ?? 0) > 0 ? "warn" : "default"}
-              />
-              <StatCard
-                label="Dead"
-                value={sx?.counts.dead ?? 0}
-                hint="cleaned up"
-              />
+              {/* Knobs */}
+              <section>
+                <h3 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
+                  Knobs
+                </h3>
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                  <Knob
+                    name="WARM_POOL_SIZE"
+                    value={stats.warm_pool.configured_size}
+                    hint="target warm tasks"
+                  />
+                  <Knob
+                    name="WARM_POOL_MAX_PROVISIONING"
+                    value={stats.warm_pool.max_provisioning}
+                    hint="max concurrent fills"
+                  />
+                  <Knob
+                    name="WARM_POOL_TTL_MINUTES"
+                    value={stats.warm_pool.ttl_minutes}
+                    hint="recycle older than"
+                  />
+                  <Knob
+                    name="WARM_POOL_RECENT_AGENT_HOURS"
+                    value={stats.warm_pool.recent_agent_hours}
+                    hint="warm only for recent agents"
+                  />
+                </dl>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Read at process boot. Change in env, restart service. See{" "}
+                  <code>src/server/warmPool/README.md</code>.
+                </p>
+              </section>
+
+              {/* Runtime */}
+              <section>
+                <h3 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
+                  Runtime
+                </h3>
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                  <KV label="Region" value={stats.runtime.aws_region} />
+                  <KV label="Cluster" value={stats.runtime.aws_cluster} />
+                  <KV
+                    label="Task definition"
+                    value={maskArn(stats.runtime.task_definition_arn)}
+                    mono
+                  />
+                  <KV
+                    label="Container port"
+                    value={String(stats.runtime.container_port)}
+                  />
+                  <KV
+                    label="Reconcile interval"
+                    value={`${stats.runtime.reconcile_interval_seconds}s`}
+                  />
+                  <KV label="Total agents" value={String(stats.agents.total)} />
+                </dl>
+              </section>
             </div>
-
-            {sx && sx.by_agent.length > 0 ? (
-              <div className="mt-4 overflow-x-auto rounded-md border border-border">
-                <table className="w-full text-sm">
-                  <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-medium">
-                        Agent
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        Ready
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium">
-                        Creating
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sx.by_agent.map((row) => (
-                      <tr key={row.agent_id} className="border-t border-border">
-                        <td className="px-3 py-2">
-                          <Link
-                            href={`/agents/${row.agent_id}`}
-                            className="hover:underline"
-                          >
-                            {row.agent_name ?? (
-                              <span className="font-mono text-xs text-muted-foreground">
-                                {row.agent_id.slice(0, 8)}
-                              </span>
-                            )}
-                          </Link>
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {row.ready}
-                        </td>
-                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                          {row.creating}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-muted-foreground">
-                No live sessions.
-              </p>
-            )}
-          </section>
-
-          {/* Runtime */}
-          <section>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Runtime
-            </h2>
-            <div className="rounded-md border border-border bg-card divide-y divide-border text-sm">
-              <Row label="Region">{rt?.aws_region ?? "—"}</Row>
-              <Row label="ECS cluster">{rt?.aws_cluster ?? "—"}</Row>
-              <Row label="Task definition">
-                <span className="font-mono text-xs">
-                  {rt ? maskArn(rt.task_definition_arn) : "—"}
-                </span>
-              </Row>
-              <Row label="Container port">
-                {rt?.container_port ?? "—"}
-              </Row>
-              <Row label="Reconcile interval">
-                {rt?.reconcile_interval_seconds ?? 0}s
-              </Row>
-              <Row label="Total agents">{stats.agents.total}</Row>
-            </div>
-          </section>
-
-          <section className="text-xs text-muted-foreground">
-            <p>
-              Knobs are read from process env at boot. To change them, update
-              the env vars on the host (Render dashboard, <code>.env</code>{" "}
-              for local) and restart the service. See{" "}
-              <code>src/server/warmPool/README.md</code> for sizing guidance.
-            </p>
-          </section>
-        </div>
+          </details>
+        </>
       ) : null}
     </div>
   );
 }
 
-function Row({
-  label,
-  children,
+function Knob({
+  name,
+  value,
+  hint,
 }: {
-  label: string;
-  children: React.ReactNode;
+  name: string;
+  value: number;
+  hint: string;
 }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-3">
-      <div className="w-44 shrink-0 text-muted-foreground">{label}</div>
-      <div className="min-w-0 flex-1 break-all">{children}</div>
+    <div>
+      <div className="text-xs font-mono text-muted-foreground">{name}</div>
+      <div className="flex items-baseline gap-2">
+        <span className="tabular-nums text-foreground">{value}</span>
+        <span className="text-xs text-muted-foreground">{hint}</span>
+      </div>
+    </div>
+  );
+}
+
+function KV({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div
+        className={cn(
+          "break-all",
+          mono ? "font-mono text-xs" : "text-sm",
+        )}
+      >
+        {value}
+      </div>
     </div>
   );
 }
