@@ -34,7 +34,10 @@ CONTAINER_ENV_GITHUB_TOKEN=ghp_...   # container sees GITHUB_TOKEN=ghp_...
 
 ### Deploying
 
-Per-platform guides in [`deploy/`](deploy/).
+Recommended path: AWS EKS for the sandbox cluster, Render for web +
+worker. See [`deploy/`](deploy/) — `bin/eks-up.sh` provisions the
+cluster, the Render Blueprint at the top of
+[`deploy/render/README.md`](deploy/render/README.md) is one click.
 
 ## Architecture
 
