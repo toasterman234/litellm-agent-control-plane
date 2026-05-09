@@ -304,6 +304,10 @@ export interface ReconcileResult {
   // or terminal — non-zero usually means an operator or migration deleted
   // a warm row out from under the worker.
   warm_orphans_stopped: number;
+  // Ready Sessions whose backing ECS task vanished (stopped externally —
+  // OOM, eviction, manual stop). Flipped to `dead` so send_message stops
+  // hammering a dead public IP.
+  ghost_killed: number;
 }
 
 // must export:

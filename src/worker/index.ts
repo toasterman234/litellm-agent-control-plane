@@ -28,12 +28,14 @@ async function tick() {
       r.stopped > 0 ||
       r.failed_creating > 0 ||
       r.idle_killed > 0 ||
-      r.warm_orphans_stopped > 0
+      r.warm_orphans_stopped > 0 ||
+      r.ghost_killed > 0
     ) {
       console.log(
         `reconcile: inspected=${r.inspected} stopped=${r.stopped} ` +
           `failed_creating=${r.failed_creating} idle_killed=${r.idle_killed} ` +
-          `warm_orphans_stopped=${r.warm_orphans_stopped}`,
+          `warm_orphans_stopped=${r.warm_orphans_stopped} ` +
+          `ghost_killed=${r.ghost_killed}`,
       );
     }
   } catch (e) {

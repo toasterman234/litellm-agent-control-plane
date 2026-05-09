@@ -12,8 +12,9 @@
  * tens of millis is dwarfed by the harness call itself.
  *
  * Network or 5xx errors from the harness bubble up as a 502 via the generic
- * error handler. Marking the session dead on connection-refused is a v2
- * concern — for now the reconciler will eventually catch it.
+ * error handler. On hard connect failures (timeout, refused, DNS) we also
+ * mark the session `dead` inline so the UI can surface restart immediately
+ * instead of waiting up to RECONCILE_INTERVAL_SECONDS for the ghost sweep.
  */
 
 import { ZodError } from "zod";
@@ -39,6 +40,33 @@ export const dynamic = "force-dynamic";
 
 interface RouteContext {
   params: Promise<{ session_id: string }>;
+}
+
+// undici / Node net error codes that indicate the sandbox host is unreachable
+// rather than a transient app-level error. Matching widens slightly: any
+// `cause.code` in this set OR a top-level message containing "fetch failed"
+// with a connect-timeout cause is treated as terminal for this session.
+const HARD_CONNECT_CODES = new Set([
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+]);
+
+function isHardConnectFailure(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { code?: unknown; cause?: unknown };
+  if (typeof e.code === "string" && HARD_CONNECT_CODES.has(e.code)) return true;
+  const cause = e.cause;
+  if (cause && typeof cause === "object") {
+    const c = (cause as { code?: unknown }).code;
+    if (typeof c === "string" && HARD_CONNECT_CODES.has(c)) return true;
+  }
+  return false;
 }
 
 async function persistHistorySnapshot(opts: {
@@ -103,6 +131,25 @@ export async function POST(req: Request, ctx: RouteContext) {
       // Network failure or 5xx from the sandbox. Re-throw as a 502 so the
       // caller can distinguish "harness unreachable" from a generic 500.
       console.error("harness send_message failed", err);
+      if (isHardConnectFailure(err)) {
+        try {
+          // updateMany so the status guard is part of the WHERE — avoids a
+          // race with the reconciler flipping the row first.
+          await prisma.session.updateMany({
+            where: { session_id, status: "ready" },
+            data: {
+              status: "dead",
+              failure_reason: "sandbox unreachable",
+              stopped_at: new Date(),
+            },
+          });
+        } catch (markErr) {
+          console.warn(
+            `failed to mark session ${session_id} dead after connect failure:`,
+            markErr,
+          );
+        }
+      }
       throw new HttpError(502, "harness request failed");
     }
 

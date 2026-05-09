@@ -231,6 +231,42 @@ export async function reconcileOrphans(): Promise<ReconcileResult> {
     }
   }
 
+  // Ghost sweep: DB row says ready + has task_arn, but ECS shows no live task
+  // (task stopped externally — OOM, manual stop, eviction). Without this the
+  // row stays ready forever and send_message hits a dead public IP until the
+  // idle window expires. Tasks reappear in listTaggedTasks only while
+  // RUNNING/PENDING, so absence here means gone.
+  const liveArns = new Set(
+    tasks.map((t) => t.task_arn).filter((a): a is string => !!a),
+  );
+  const readyRows = await prisma.session.findMany({
+    where: { status: "ready", task_arn: { not: null } },
+  });
+  let ghost_killed = 0;
+  const ghostGraceCutoff = new Date(now - RECONCILE_NEW_TASK_GRACE_MS);
+  for (const s of readyRows) {
+    if (!s.task_arn || liveArns.has(s.task_arn)) continue;
+    // Same grace window as the orphan branch — avoid racing a task that
+    // RunTask just returned for but hasn't shown up in ListTasks yet.
+    if (s.created_at > ghostGraceCutoff) continue;
+    try {
+      await prisma.session.update({
+        where: { session_id: s.session_id },
+        data: {
+          status: "dead",
+          failure_reason: "task disappeared",
+          stopped_at: new Date(),
+        },
+      });
+      ghost_killed += 1;
+    } catch (e) {
+      console.warn(
+        `reconcile: failed to mark ghost session ${s.session_id} dead:`,
+        e,
+      );
+    }
+  }
+
   const warm_orphans_stopped = await sweepWarmOrphans(warm_tagged, now);
 
   return {
@@ -239,6 +275,7 @@ export async function reconcileOrphans(): Promise<ReconcileResult> {
     failed_creating,
     idle_killed,
     warm_orphans_stopped,
+    ghost_killed,
   };
 }
 
