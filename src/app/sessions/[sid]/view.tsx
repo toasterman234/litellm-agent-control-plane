@@ -49,6 +49,10 @@ interface LocalMessage {
   parts?: HarnessMessagePart[];
   status: LocalStatus;
   error?: string;
+  // Wall-clock ms from the user pressing send to the assistant reply
+  // landing in the UI (sendMessage POST + refreshThread GET combined).
+  // Set only on the most recent assistant message after a successful send.
+  latency_ms?: number;
 }
 
 // Map opencode's `[{info, parts}, ...]` thread into the local message
@@ -355,6 +359,11 @@ export default function SessionThreadView() {
 
     drainingRef.current = true;
 
+    // Wall-clock from "we picked this up off the queue" to "refreshThread
+    // landed the canonical row". Stamped onto the assistant message after
+    // the stream + refresh finishes so the UI can show round-trip latency.
+    const sendStartMs = performance.now();
+
     // All state mutations live inside the async task so they happen after
     // the effect body returns — sidesteps `react-hooks/set-state-in-effect`
     // and keeps render scheduling predictable.
@@ -450,6 +459,21 @@ export default function SessionThreadView() {
           { signal: ctl.signal },
         );
         await refreshThread();
+        const elapsedMs = Math.round(performance.now() - sendStartMs);
+        // Stamp the freshly-arrived assistant message (the last one in the
+        // thread) with the round-trip latency. refreshThread has already
+        // replaced the optimistic in_progress placeholder, so we mutate the
+        // most recent assistant row in-place. Skip if the thread is empty.
+        setMessages((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === "assistant") {
+              const next = prev.slice();
+              next[i] = { ...next[i], latency_ms: elapsedMs };
+              return next;
+            }
+          }
+          return prev;
+        });
       } catch (e) {
         const msg = e instanceof ApiError ? e.message : (e as Error).message;
         setError(msg);
@@ -824,8 +848,21 @@ function AssistantBlock({ msg }: { msg: LocalMessage }) {
       {failed && msg.error && (
         <div className="mono text-[11px] text-red-700">{msg.error}</div>
       )}
+
+      {!inProgress && !failed && typeof msg.latency_ms === "number" && (
+        <div className="mono text-[11px] text-gray-400">
+          {formatLatency(msg.latency_ms)}
+        </div>
+      )}
     </div>
   );
+}
+
+// Render the round-trip duration in the smallest unit that keeps it
+// readable: ms under 1s, seconds with one decimal otherwise.
+function formatLatency(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function PartBlock({ part }: { part: HarnessMessagePart }) {

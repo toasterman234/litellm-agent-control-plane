@@ -18,47 +18,37 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   UI_USERNAME: z.string().min(1),
   MASTER_KEY: z.string().min(8),
-  AWS_REGION: z.string().min(1),
-  AWS_CLUSTER: z.string().min(1),
-  // Credentials are resolved by the SDK's default provider chain at runtime,
-  // not parsed here. Set whatever the chain understands: env vars,
-  // AWS_PROFILE + ~/.aws/credentials, SSO, instance role.
-  AWS_ACCESS_KEY_ID: z.string().optional(),
-  AWS_SECRET_ACCESS_KEY: z.string().optional(),
-  AWS_PROFILE: z.string().optional(),
-  AWS_TASK_DEFINITION_ARN: z.string().min(1),
-  // Per-harness overrides. Optional — when unset, both harnesses use
-  // AWS_TASK_DEFINITION_ARN (single-harness fallback for existing deploys).
-  AWS_TASK_DEFINITION_ARN_OPENCODE: z.string().optional(),
-  AWS_TASK_DEFINITION_ARN_CLAUDE_SDK: z.string().optional(),
-  AWS_SUBNETS: z
-    .string()
-    .min(1)
-    .transform((s) =>
-      s
-        .split(",")
-        .map((v) => v.trim())
-        .filter((v) => v.length > 0),
-    )
-    .refine((arr) => arr.length > 0, {
-      message: "AWS_SUBNETS must contain at least one subnet id",
-    }),
-  AWS_SECURITY_GROUP: z.string().min(1),
+  K8S_NAMESPACE: z.string().min(1).default("default"),
+  K8S_NODE_HOST: z.string().optional().default("host.docker.internal"),
+  K8S_NODEPORT_MIN: z.coerce.number().int().min(30000).max(32767).default(30000),
+  K8S_NODEPORT_MAX: z.coerce.number().int().min(30000).max(32767).default(30099),
+  K8S_IMAGE_PULL_POLICY: z.enum(["Never", "IfNotPresent", "Always"]).default("Never"),
+  K8S_HARNESS_IMAGE: z.string().min(1).default("opencode-sandbox:dev"),
+  K8S_API_SERVER: z.string().optional().default(""),
+  // Explicit opt-in to skip TLS verification when K8S_API_SERVER is
+  // overridden. Required for kind/local-dev because the kind apiserver
+  // cert SAN won't cover host.docker.internal. Must remain false for any
+  // production cluster — see src/server/k8s.ts loadKubeConfig().
+  K8S_SKIP_TLS_VERIFY: z
+    .enum(["true", "false"])
+    .optional()
+    .default("false")
+    .transform((v) => v === "true"),
   PREINSTALLED_GITHUB_REPO: z.string().min(1),
   LITELLM_API_BASE: z.string().min(1),
   LITELLM_API_KEY: z.string().min(1),
   CONTAINER_PORT: z.coerce.number().int().positive().default(4096),
   RECONCILE_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
 
-  // Warm pool — pre-provisioned Fargate tasks waiting to be claimed by a
-  // session create. Default of 2 keeps two tasks ready for the most
-  // recently active agent so users get sub-5s session creates out of the
-  // box (cost ≈ $32/mo at 512 CPU / 1024 mem). Set to 0 to disable.
+  // Warm pool — pre-provisioned sandbox pods waiting to be claimed by a
+  // session create. Default of 2 keeps two pods ready for the most
+  // recently active agent so users get sub-2s session creates out of the
+  // box. Set WARM_POOL_SIZE=0 to disable.
   WARM_POOL_SIZE: z.coerce.number().int().nonnegative().default(2),
   WARM_POOL_MAX_PROVISIONING: z.coerce.number().int().positive().default(2),
   WARM_POOL_TTL_MINUTES: z.coerce.number().int().positive().default(30),
   // Ignore agents whose last session is older than this — don't keep
-  // warm tasks around for an agent that hasn't been used in a long time.
+  // warm pods around for an agent that hasn't been used in a long time.
   WARM_POOL_RECENT_AGENT_HOURS: z.coerce
     .number()
     .int()
@@ -81,11 +71,6 @@ function collectContainerEnvPassthrough(
 }
 
 function parseEnv(): ServerEnv {
-  // During `next build` most hosting platforms (Render, Fly, Railway, etc.)
-  // don't expose runtime env vars to the build container, so collecting page
-  // data for API routes that import this module would always crash. Skip
-  // validation in the build phase — runtime imports re-evaluate this file
-  // with the real env in place.
   if (process.env.NEXT_PHASE === "phase-production-build") {
     return {} as ServerEnv;
   }
@@ -99,8 +84,14 @@ function parseEnv(): ServerEnv {
         `See .env.example for the required keys.`,
     );
   }
+  const data = parsed.data;
+  if (data.K8S_NODEPORT_MIN > data.K8S_NODEPORT_MAX) {
+    throw new Error(
+      `K8S_NODEPORT_MIN (${data.K8S_NODEPORT_MIN}) > K8S_NODEPORT_MAX (${data.K8S_NODEPORT_MAX})`,
+    );
+  }
   return {
-    ...parsed.data,
+    ...data,
     containerEnvPassthrough: collectContainerEnvPassthrough(process.env),
   };
 }
@@ -112,9 +103,6 @@ function getEnv(): ServerEnv {
   return _env;
 }
 
-// Proxy makes every `env.FOO` access trigger parseEnv on first read. After
-// that, subsequent accesses hit the cached object directly. Property writes
-// are blocked — env should be treated as immutable runtime config.
 export const env: ServerEnv = new Proxy({} as ServerEnv, {
   get(_target, prop) {
     return getEnv()[prop as keyof ServerEnv];

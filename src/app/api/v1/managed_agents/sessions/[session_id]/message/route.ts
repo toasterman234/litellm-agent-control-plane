@@ -32,11 +32,21 @@ import {
   harnessSendMessage,
 } from "@/server/harness";
 import {
+  ensureFlushLoop,
+  getCachedSession,
+  invalidateSession,
+  markSessionSeen,
+} from "@/server/sessionCache";
+import {
   HttpError,
   httpError,
   SendMessageBody,
   type HarnessMessagePart,
 } from "@/server/types";
+
+// First import wires the periodic last_seen_at flusher. ensureFlushLoop is
+// idempotent so re-imports under HMR don't stack timers.
+ensureFlushLoop();
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,15 +113,12 @@ export async function POST(req: Request, ctx: RouteContext) {
     const { session_id } = await ctx.params;
     const body = SendMessageBody.parse(await req.json());
 
-    const row = await prisma.session.findUnique({
-      where: { session_id },
-      include: { agent: true },
-    });
-    if (!row || row.status !== "ready") {
+    const cached = await getCachedSession(session_id);
+    if (!cached) {
+      // Cache miss + DB row absent / not ready / not fully provisioned. We
+      // collapse the prior 404 / 409 distinction into a single 404 here —
+      // callers shouldn't be hitting message on a non-ready session anyway.
       httpError(404, `session ${session_id} not found or not ready`);
-    }
-    if (!row.sandbox_url || !row.harness_session_id) {
-      httpError(409, `session ${session_id} is not fully provisioned`);
     }
 
     // The zod schema accepts arbitrary `Record<string, unknown>` parts to
@@ -126,9 +133,9 @@ export async function POST(req: Request, ctx: RouteContext) {
     let response;
     try {
       response = await harnessSendMessage({
-        sandbox_url: row.sandbox_url,
-        harness_session_id: row.harness_session_id,
-        model: row.agent.model,
+        sandbox_url: cached.sandbox_url,
+        harness_session_id: cached.harness_session_id,
+        model: cached.agent_model,
         parts,
       });
     } catch (err) {
@@ -136,6 +143,9 @@ export async function POST(req: Request, ctx: RouteContext) {
       // caller can distinguish "harness unreachable" from a generic 500.
       console.error("harness send_message failed", err);
       if (isHardConnectFailure(err)) {
+        // Drop the cache entry up front so concurrent in-flight requests
+        // don't keep dialing a dead pod.
+        invalidateSession(session_id);
         try {
           // updateMany so the status guard is part of the WHERE — avoids a
           // race with the reconciler flipping the row first.
@@ -157,27 +167,16 @@ export async function POST(req: Request, ctx: RouteContext) {
       throw new HttpError(502, "harness request failed");
     }
 
-    // Fire-and-forget: bump last_seen_at + snapshot the full opencode thread
-    // into Session.history. Both are best-effort and run AFTER the response
-    // is queued to the client — a cross-region DB write is ~5–50ms that we
-    // don't need on the critical path. Failures are logged and swallowed;
-    // the idle reconciler will catch a row whose timestamp drifted by one
-    // user turn.
-    void prisma.session
-      .update({
-        where: { session_id },
-        data: { last_seen_at: new Date() },
-      })
-      .catch((err) => {
-        console.warn(
-          `failed to bump last_seen_at for session ${session_id}:`,
-          err,
-        );
-      });
+    markSessionSeen(session_id);
+
+    // Fire-and-forget: snapshot the full opencode thread into Session.history
+    // so a restarted pod can replay it as the next user message's preamble.
+    // Failures are logged and swallowed — never block the user reply on a
+    // history persist.
     void persistHistorySnapshot({
       session_id,
-      sandbox_url: row.sandbox_url,
-      harness_session_id: row.harness_session_id,
+      sandbox_url: cached.sandbox_url,
+      harness_session_id: cached.harness_session_id,
     });
 
     return Response.json(response);

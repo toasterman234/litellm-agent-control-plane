@@ -16,7 +16,6 @@ import {
   HARNESS_OPENCODE,
   KNOWN_HARNESSES,
   httpError,
-  resolveTaskDefinitionArn,
   toApiAgent,
 } from "@/server/types";
 import { wrap } from "@/server/route-helpers";
@@ -55,7 +54,10 @@ export const POST = wrap(async (req: Request) => {
       branch: body.branch ?? "main",
       pfp_url: body.pfp_url ?? null,
       mcp_servers: body.mcp_servers as Prisma.InputJsonValue,
-      task_definition_arn: resolveTaskDefinitionArn(harness_id, env),
+      // Legacy column from the ECS era; on k8s we run the same harness
+      // image for every Sandbox so we just stash that here. Plan is to
+      // drop the column on the next schema bump.
+      task_definition_arn: env.K8S_HARNESS_IMAGE,
       container_port: env.CONTAINER_PORT,
       created_by: identity.user_id,
     },
