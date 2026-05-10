@@ -35,6 +35,10 @@ export const CreateAgentBody = z.object({
   model: z.string().min(1),
   prompt: z.string().optional(),
   tools: z.array(z.unknown()).default([]),
+  // Which harness binary the Fargate container runs. Picks the task
+  // definition family — opencode (default) or claude-agent-sdk. Kept open
+  // as `string` so adding a third harness is a one-line env change.
+  harness_id: z.string().optional(),
   repo_url: z.string().url().optional(),
   branch: z.string().optional(),
   pfp_url: z.string().optional(),
@@ -455,6 +459,12 @@ export const TAG_SESSION_ID = "litellm_session_id";
 export const TAG_AGENT_ID = "litellm_agent_id";
 export const TAG_WARM_TASK_ID = "litellm_warm_task_id";
 export const HARNESS_OPENCODE = "opencode";
+export const HARNESS_CLAUDE_SDK = "claude-agent-sdk";
+export const KNOWN_HARNESSES: ReadonlySet<string> = new Set([
+  HARNESS_OPENCODE,
+  HARNESS_CLAUDE_SDK,
+]);
+
 export const SESSION_CREATING_TIMEOUT_MS = 600_000;
 // Ready sessions with no message activity (last_seen_at) older than this are
 // reaped by the reconciler — keeps cluster footprint bounded for forgotten tabs.
