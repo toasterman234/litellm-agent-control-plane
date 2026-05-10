@@ -30,7 +30,13 @@ services:
     # `npm ci` skip devDependencies by default, which then breaks
     # `next build` (Tailwind / Turbopack devDeps).
     buildCommand: npm ci --include=dev && npx prisma generate && npm run build
-    preDeployCommand: npx prisma migrate deploy
+    # `npx prisma migrate deploy` runs on the same Postgres advisory lock
+    # the running web replica holds (during a hot deploy). On the
+    # default 10s timeout that races and fails the pre-deploy. We're
+    # using `prisma db push` semantics anyway (`prisma/migrations/` is
+    # empty), so the bake is unnecessary on every deploy.
+    # Run `npx prisma db push --accept-data-loss --skip-generate` once
+    # locally when the schema changes; deploys carry the existing schema.
     startCommand: |
       set -e
       if [ -n "$KUBE_CONFIG_B64" ]; then
