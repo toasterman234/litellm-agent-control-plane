@@ -92,18 +92,10 @@ export function buildWebhookAdapter(): WebhookAdapter {
       const externalSessionId = evt.agentSession?.id;
       if (!externalSessionId) return { kind: "ignore" };
 
-      // The Agent that should handle this delegation = the app-user the
-      // event was sent to. We store that as `app_user_id` in the install's
-      // metadata at OAuth time, so the same install id maps to one agent
-      // for now (one binding per install in v1).
-      const targetAgentId =
-        typeof appUserId === "string" ? appUserId : "unknown";
-
       if (evt.action === "created") {
         return {
           kind: "new_task",
           external_session_id: externalSessionId,
-          target_agent_id: targetAgentId,
           prompt: issueToPrompt(evt.agentSession ?? {}),
           external_ref: evt.agentSession?.issue?.identifier ?? undefined,
         };
