@@ -199,7 +199,7 @@ function IntegrationCard({ agentId, meta }: { agentId: string; meta: Integration
           {loading ? (
             <Loader2 className="size-4 animate-spin text-muted-foreground" />
           ) : !configured ? (
-            <Button size="sm" onClick={() => setEditing(true)}>
+            <Button size="sm" onClick={() => setEditing(true)} disabled={editing}>
               Enable
             </Button>
           ) : !isConnected ? (
@@ -280,7 +280,7 @@ function IntegrationCard({ agentId, meta }: { agentId: string; meta: Integration
         </div>
       ) : null}
 
-      {editing || (!loading && !configured) ? (
+      {editing ? (
         <CredentialsForm
           meta={meta}
           webhookUrl={status?.webhook_url ?? ""}
@@ -337,7 +337,9 @@ function CredentialsForm({
     });
   }
 
-  const callbackUrl = webhookUrl.replace("/webhooks/", "/oauth/").replace(/\/[^/]+$/, "") + "/callback";
+  // Same agent_id suffix as the webhook URL; just swap the path prefix
+  // and append /callback.
+  const callbackUrl = `${webhookUrl.replace("/webhooks/", "/oauth/")}/callback`;
 
   return (
     <form
