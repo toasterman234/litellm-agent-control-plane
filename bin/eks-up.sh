@@ -5,12 +5,18 @@
 # What it does:
 #   1. Verifies AWS credentials and required CLIs.
 #   2. Creates an EKS cluster (eksctl) with a small managed node group
-#      and the NodePort range 30000-30099 exposed via a security-group
-#      ingress rule.
+#      and the NodePort range exposed via a security-group ingress rule.
 #   3. Installs the kubernetes-sigs/agent-sandbox controller.
-#   4. Writes a static service-account kubeconfig (long-lived token) to
-#      stdout as base64 — paste into KUBE_CONFIG_B64 on Render / Railway.
-#   5. Prints the K8S_NODE_HOST value (a public node IP).
+#   4. Maps the caller's IAM principal to system:masters via the aws-auth
+#      ConfigMap (idempotent — safe to re-run).
+#   5. Writes an exec-plugin kubeconfig to stdout as base64 — paste into
+#      KUBE_CONFIG_B64 on Render / Railway. The kubeconfig calls
+#      `aws-iam-authenticator token` at every request, so the same AWS
+#      credentials already in the deploy env (AWS_ACCESS_KEY_ID /
+#      AWS_SECRET_ACCESS_KEY / AWS_REGION) auth to EKS without a baked-in
+#      bearer token that would expire after 24h.
+#   6. Prints the K8S_NODE_HOST guidance (set to `auto` — the platform
+#      discovers a Ready node ExternalIP at spawn time).
 #
 # Usage:
 #   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION=us-east-1 \
@@ -18,8 +24,9 @@
 #
 # Optional env:
 #   CLUSTER_NAME    default: litellm-agents
-#   NODE_TYPE       default: t3.medium  (4 GiB / 2 vCPU)
-#   NODE_COUNT      default: 1
+#   NODE_TYPE       default: t3.large  (2 vCPU / 8 GiB)
+#   NODE_COUNT      default: 2
+#   NODE_MAX        default: 4
 #   K8S_VERSION     default: 1.30
 #   AGENT_SANDBOX_VERSION  default: v0.4.5
 #
@@ -62,8 +69,9 @@ command -v kubectl >/dev/null || err "kubectl not installed"
 command -v jq      >/dev/null || err "jq not installed"
 
 : "${AWS_REGION:?AWS_REGION required}"
-aws sts get-caller-identity >/dev/null \
+CALLER_ARN=$(aws sts get-caller-identity --query 'Arn' --output text 2>/dev/null) \
   || err "AWS credentials missing or invalid"
+info "running as $CALLER_ARN"
 
 # ---- 2. Cluster ----------------------------------------------------------
 if eksctl get cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
@@ -100,37 +108,46 @@ aws ec2 authorize-security-group-ingress \
 
 # ---- 3. agent-sandbox controller ----------------------------------------
 info "installing agent-sandbox $AGENT_SANDBOX_VERSION"
-kubectl apply -f \
-  "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml" \
-  >&2
-kubectl -n agent-sandbox-system rollout status \
-  deployment/agent-sandbox-controller --timeout=300s >&2
+silent kubectl apply -f \
+  "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
+silent kubectl -n agent-sandbox-system rollout status \
+  deployment/agent-sandbox-controller --timeout=300s
 
-# ---- 4. Service-account kubeconfig --------------------------------------
-# eksctl's default kubeconfig uses `aws eks get-token` (short-lived). For
-# Render / Railway we need a static long-lived token.
-SA_NS="default"
-SA_NAME="litellm-agents-deployer"
-info "creating service account $SA_NS/$SA_NAME with cluster-admin"
-kubectl -n "$SA_NS" create serviceaccount "$SA_NAME" \
-  --dry-run=client -o yaml | kubectl apply -f - >&2
-kubectl create clusterrolebinding "${SA_NAME}-binding" \
-  --clusterrole=cluster-admin \
-  --serviceaccount="${SA_NS}:${SA_NAME}" \
-  --dry-run=client -o yaml | kubectl apply -f - >&2
+# ---- 4. IAM identity mapping --------------------------------------------
+# `aws sts get-caller-identity` returns the *session* ARN for an assumed
+# role (e.g. arn:aws:sts::1234:assumed-role/MyRole/session). aws-auth /
+# eksctl expect the role's *base* ARN (arn:aws:iam::1234:role/MyRole).
+# Normalize before passing to eksctl.
+MAPPING_ARN="$CALLER_ARN"
+case "$CALLER_ARN" in
+  arn:aws:sts::*:assumed-role/*)
+    # Strip the trailing session name and rewrite sts → iam.
+    role_path=${CALLER_ARN#arn:aws:sts::}      # 1234:assumed-role/MyRole/session
+    account=${role_path%%:*}                   # 1234
+    rest=${role_path#*:assumed-role/}          # MyRole/session
+    role_name=${rest%%/*}                      # MyRole
+    MAPPING_ARN="arn:aws:iam::${account}:role/${role_name}"
+    ;;
+esac
 
-# Mint a service-account token. EKS caps duration at 24h regardless of
-# what we request — projected service-account tokens don't honor longer
-# expirations. Operators should re-run this script (it's idempotent on
-# the SA + binding) on a schedule, or move to IRSA for in-cluster
-# workloads.
-TOKEN=$(kubectl create token "$SA_NAME" -n "$SA_NS" --duration=24h)
+info "ensuring $MAPPING_ARN is mapped to system:masters in aws-auth"
+# `--no-duplicate-arns` makes this idempotent — re-running the script
+# (e.g. to bump node size) doesn't pile up duplicate mappings.
+silent eksctl create iamidentitymapping \
+  --cluster "$CLUSTER_NAME" \
+  --region "$AWS_REGION" \
+  --arn "$MAPPING_ARN" \
+  --group system:masters \
+  --username "litellm-agents-deployer" \
+  --no-duplicate-arns
 
-# Extract the cluster's server + CA from the AWS API directly. We cannot
-# rely on `kubectl config view --raw -o jsonpath='{.clusters[0]...}'` —
-# the host's kubeconfig may have multiple clusters from prior eksctl /
-# `aws eks update-kubeconfig` runs, and `[0]` is whichever happens to be
-# first. Pulling from EKS guarantees the right cluster.
+# ---- 5. Exec-plugin kubeconfig ------------------------------------------
+# The kubernetes-client-node library invokes `aws-iam-authenticator token`
+# on every API call (matching the `exec` block below) and uses the
+# resulting bearer token to dial the apiserver. The AWS credentials in
+# the deploy env (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) are read
+# from the inherited process env by the authenticator binary, so the
+# kubeconfig itself carries no secret and never expires.
 APISERVER=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
               --query 'cluster.endpoint' --output text)
 CA_DATA=$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
@@ -147,18 +164,29 @@ clusters:
 contexts:
 - context:
     cluster: ${CLUSTER_NAME}
-    user: ${SA_NAME}
-    namespace: ${SA_NS}
+    user: aws-iam
+    namespace: default
   name: ${CLUSTER_NAME}
 current-context: ${CLUSTER_NAME}
 users:
-- name: ${SA_NAME}
+- name: aws-iam
   user:
-    token: ${TOKEN}
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: aws-iam-authenticator
+      args:
+      - token
+      - -i
+      - ${CLUSTER_NAME}
+      env:
+      - name: AWS_REGION
+        value: ${AWS_REGION}
+      interactiveMode: Never
+      provideClusterInfo: false
 EOF
 )
 
-# ---- 5. Output -----------------------------------------------------------
+# ---- 6. Output -----------------------------------------------------------
 # Capture the current first-node ExternalIP for the operator's reference,
 # but tell them to set `K8S_NODE_HOST=auto` so the platform discovers
 # Ready node IPs via the apiserver at request time. Pinning a single IP
@@ -174,6 +202,11 @@ info "=== READY ==="
 info "Set K8S_NODE_HOST=auto on web/worker. Platform discovers a Ready"
 info "node ExternalIP via the apiserver at spawn time and caches for 30s."
 info "Pinning a single IP breaks on nodegroup scale (sample IP: $SAMPLE_HOST)."
+info ""
+info "The kubeconfig below uses aws-iam-authenticator at runtime, so the"
+info "deploy env must also set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY /"
+info "AWS_REGION. The kubeconfig itself never expires."
+info ""
 info "Paste the base64 string below into KUBE_CONFIG_B64 on Render / Railway:"
 info ""
 
