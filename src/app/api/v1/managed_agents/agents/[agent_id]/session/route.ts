@@ -6,15 +6,22 @@
  *   warm  — claim a pre-provisioned Fargate task from the pool and run only
  *           the harness handshake (~5s on the happy path).
  *   cold  — fall through to the original RunTask + waits + harness flow
- *           (~40s; comment below). Used when the pool is disabled
+ *           (~30s-8min). Used when the pool is disabled
  *           (`WARM_POOL_SIZE=0`), drained, has no warm task for this
  *           agent's config, or the request carries per-session `env_vars`
  *           that wouldn't be in a warm task's container env.
  *
- * Either way, we persist a `creating` Session row up front so an in-flight
- * failure leaves an auditable row rather than a silently orphaned task.
+ * The handler returns the `creating` Session row immediately (~50ms) and
+ * runs the bring-up fire-and-forget in the background. The UI polls
+ * /sessions/{id} for the `ready` (or `failed`) flip — so a slow cold path
+ * doesn't block the response and the user sees the session page right away
+ * with a live progress indicator instead of a spinner on the agent page.
  *
- * Cold-path comment for context: ~50-120s end-to-end, ported from
+ * Either path persists the `creating` row up front so an in-flight failure
+ * leaves an auditable row rather than a silently orphaned task. Background
+ * failures flip status to `failed` with `failure_reason`.
+ *
+ * Cold-path bring-up is ported from
  * litellm/proxy/managed_agents_endpoints/endpoints_sessions.py:create_session
  * but stripped of the multi-tenant key minting that lives in the upstream
  * Python proxy.
@@ -67,6 +74,86 @@ interface BringUpBody {
   initial_prompt?: string;
   title?: string;
   env_vars?: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Background bring-up orchestrator.
+//
+// Wraps the warm/cold + fallback dance that used to live inline in the POST
+// handler. Called fire-and-forget so the HTTP response can return the
+// `creating` Session row in ~50ms instead of waiting 30s-8min for the
+// sandbox to spin up. The UI polls /sessions/{id} for the status flip.
+//
+// Failures (warm + cold both dead, harness unreachable, network) flip the
+// Session row to `failed` with the reason so the client can render it.
+// We log too — a silent fire-and-forget is impossible to debug.
+// ---------------------------------------------------------------------------
+
+async function runBringUp(
+  agent: AgentRow,
+  session_id: string,
+  body: BringUpBody,
+  warm: WarmTaskRow | null,
+): Promise<void> {
+  try {
+    let result: BringUpResult;
+    if (warm) {
+      try {
+        result = await warmBringUp(agent, session_id, body, warm);
+      } catch (warmErr) {
+        // Warm task was claimed but its harness is unreachable (stale
+        // sandbox_url, dead container, network drift, etc). Don't bubble
+        // the failure to the user — kill the warm row and fall through to
+        // a cold spawn. The user pays a slower start instead of a failure.
+        const reason =
+          warmErr instanceof Error ? warmErr.message : String(warmErr);
+        console.warn(
+          `warm bring-up failed for warm_task_id=${warm.warm_task_id}: ${reason}; falling back to cold spawn`,
+        );
+        await markClaimedTaskDead(
+          warm.warm_task_id,
+          `warm bring-up failed: ${reason}`,
+        );
+        // Reset the half-claimed Session row so coldBringUp's own
+        // claim/update doesn't trip on stale warm fields.
+        await prisma.session.update({
+          where: { session_id },
+          data: { task_arn: null, sandbox_url: null },
+        });
+        result = await coldBringUp(agent, session_id, body);
+      }
+    } else {
+      result = await coldBringUp(agent, session_id, body);
+    }
+
+    // Hand-off succeeded — the Session row owns the ECS task now. Removing
+    // the warm row prevents the reconciler from double-stopping it. (Only
+    // applies on the success-from-warm path; the fallback already marked it
+    // dead, so deleting again is a no-op.)
+    if (warm) await deleteClaimedWarmTask(warm.warm_task_id).catch(() => {});
+
+    // Discard the result — the route already returned; the UI polls
+    // /sessions/{id} for the `ready` flip.
+    void result;
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(
+      `session create failed: session_id=${session_id} agent_id=${agent.agent_id} reason=${reason}`,
+    );
+    await prisma.session
+      .update({
+        where: { session_id },
+        data: { status: "failed", failure_reason: reason },
+      })
+      .catch((dbErr) => {
+        // Last-ditch DB write failed — there's nowhere else to surface this,
+        // so just log loudly. The orphan reconciler will eventually GC the
+        // stuck row.
+        console.error(
+          `failed to mark session ${session_id} as failed: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`,
+        );
+      });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,70 +275,43 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
   const hasEnvVars = body.env_vars && Object.keys(body.env_vars).length > 0;
   const warm = hasEnvVars ? null : await claimWarmTask(agent_id);
 
-  const session = await prisma.session.create({
-    data: {
-      agent_id,
-      status: "creating",
-      created_by: identity.user_id,
-      // Inherit the warm task's ARN so that even if bring-up dies between
-      // the claim and the harness handshake, the orphan reconciler can
-      // still trace the ECS task back to a Session row.
-      ...(warm?.task_arn ? { task_arn: warm.task_arn } : {}),
-      ...(warm?.sandbox_url ? { sandbox_url: warm.sandbox_url } : {}),
-    },
-  });
-
+  let session: SessionRow;
   try {
-    let result;
-    if (warm) {
-      try {
-        result = await warmBringUp(agent, session.session_id, body, warm);
-      } catch (warmErr) {
-        // Warm task was claimed but its harness is unreachable (stale
-        // sandbox_url, dead container, network drift, etc). Don't bubble
-        // the failure to the user — kill the warm row and fall through to
-        // a cold spawn. The user pays a slower start instead of a 500.
-        const reason =
-          warmErr instanceof Error ? warmErr.message : String(warmErr);
-        console.warn(
-          `warm bring-up failed for warm_task_id=${warm.warm_task_id}: ${reason}; falling back to cold spawn`,
-        );
-        await markClaimedTaskDead(
-          warm.warm_task_id,
-          `warm bring-up failed: ${reason}`,
-        );
-        // Reset the half-claimed Session row so coldBringUp's own
-        // claim/update doesn't trip on stale warm fields.
-        await prisma.session.update({
-          where: { session_id: session.session_id },
-          data: { task_arn: null, sandbox_url: null },
-        });
-        result = await coldBringUp(agent, session.session_id, body);
-      }
-    } else {
-      result = await coldBringUp(agent, session.session_id, body);
-    }
-
-    // Hand-off succeeded — the Session row owns the ECS task now. Removing
-    // the warm row prevents the reconciler from double-stopping it. (Only
-    // applies on the success-from-warm path; the fallback already marked it
-    // dead, so deleting again is a no-op.)
-    if (warm) await deleteClaimedWarmTask(warm.warm_task_id).catch(() => {});
-
-    return Response.json(toApiSession(result.updated, result.response));
+    session = await prisma.session.create({
+      data: {
+        agent_id,
+        status: "creating",
+        created_by: identity.user_id,
+        // Inherit the warm task's ARN so that even if bring-up dies between
+        // the claim and the harness handshake, the orphan reconciler can
+        // still trace the ECS task back to a Session row.
+        ...(warm?.task_arn ? { task_arn: warm.task_arn } : {}),
+        ...(warm?.sandbox_url ? { sandbox_url: warm.sandbox_url } : {}),
+      },
+    });
   } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-
-    await prisma.session
-      .update({
-        where: { session_id: session.session_id },
-        data: { status: "failed", failure_reason: reason },
-      })
-      .catch(() => {
-        /* best-effort; surface the original failure */
-      });
-
+    // Row creation itself failed — we have no Session row to mark failed,
+    // so propagate as a 500 the way the old synchronous flow did. Release
+    // any warm claim so it isn't orphaned.
+    if (warm) {
+      await markClaimedTaskDead(
+        warm.warm_task_id,
+        `session row create failed: ${e instanceof Error ? e.message : String(e)}`,
+      ).catch(() => {});
+    }
     if (e instanceof HttpError || e instanceof Response) throw e;
-    httpError(500, `session create failed: ${reason}`);
+    httpError(500, `session create failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+
+  // Fire-and-forget the bring-up. The Node runtime keeps the promise alive
+  // after the response returns (unlike Edge, which terminates the
+  // execution context). Render runs this route on Node so the background
+  // work continues; nothing inside coldBringUp/warmBringUp reads
+  // request-scoped state past this point — they only touch prisma, k8s,
+  // and the harness over fetch with their own internal AbortSignals.
+  void runBringUp(agent, session.session_id, body, warm);
+
+  // Return the `creating` row immediately. The UI polls /sessions/{id} and
+  // flips to the ready/failed view when the background bring-up settles.
+  return Response.json(toApiSession(session, null));
 });
