@@ -14,6 +14,7 @@
 
 import type { Agent, Memory, Session, WarmTask } from "@prisma/client";
 import { z } from "zod";
+import { decrypt, encrypt } from "@/server/integrations/core/crypto";
 
 // ============================================================================
 // DB row types (re-export from Prisma, do not redefine)
@@ -533,7 +534,29 @@ export function httpError(status: number, detail: unknown): never {
 // Row → API mappers (one source of truth so all handlers agree)
 // ============================================================================
 
+/** Encrypt each value in an env vars map before persisting. */
+export function encryptEnvVars(
+  vars: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(vars).map(([k, v]) => [k, encrypt(v)]),
+  );
+}
+
+/** Decrypt each value in a stored env vars map. */
+function decryptEnvVars(stored: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(stored).map(([k, v]) => [k, decrypt(String(v))]),
+  );
+}
+
 export function toApiAgent(row: AgentRow): ApiAgent {
+  const rawEnvVars =
+    row.env_vars &&
+    typeof row.env_vars === "object" &&
+    !Array.isArray(row.env_vars)
+      ? (row.env_vars as Record<string, unknown>)
+      : {};
   return {
     id: row.agent_id,
     name: row.agent_name ?? null,
@@ -548,12 +571,7 @@ export function toApiAgent(row: AgentRow): ApiAgent {
           (v): v is string => typeof v === "string",
         )
       : [],
-    env_vars:
-      row.env_vars &&
-      typeof row.env_vars === "object" &&
-      !Array.isArray(row.env_vars)
-        ? (row.env_vars as Record<string, string>)
-        : {},
+    env_vars: decryptEnvVars(rawEnvVars),
     created_at: row.created_at.toISOString(),
   };
 }
