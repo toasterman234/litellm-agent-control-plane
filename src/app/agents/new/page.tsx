@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { PfpUpload } from "@/components/pfp-upload";
+import { Plus, Trash2, Upload } from "lucide-react";
 import {
   AgentTemplate,
   ApiError,
@@ -137,6 +138,7 @@ export default function NewAgentPage() {
   const [loadingMeta, setLoadingMeta] = useState(true);
   const [metaError, setMetaError] = useState<string | null>(null);
 
+  // Env vars: list of [key, value] pairs for the editor UI.
   const [envVars, setEnvVars] = useState<[string, string][]>([["", ""]]);
 
   const [submitting, setSubmitting] = useState(false);
@@ -243,6 +245,63 @@ export default function NewAgentPage() {
         enabled ? new Set(state.tools.map((t) => t.name)) : new Set(),
       );
       return next;
+    });
+  }
+
+  function parseEnvFile(text: string): [string, string][] {
+    const pairs: [string, string][] = [];
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq < 1) continue;
+      const key = line.slice(0, eq).trim();
+      let val = line.slice(eq + 1).trim();
+      // Strip surrounding quotes (single or double)
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (key) pairs.push([key, val]);
+    }
+    return pairs;
+  }
+
+  function handleEnvFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result;
+      if (typeof text !== "string") return;
+      const parsed = parseEnvFile(text);
+      if (parsed.length === 0) return;
+      setEnvVars((prev) => {
+        // Merge: keep existing non-empty rows, append parsed, then add blank row
+        const existing = prev.filter(([k]) => k.trim() !== "");
+        const merged = [...existing, ...parsed, ["", ""] as [string, string]];
+        return merged;
+      });
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  function setEnvKey(idx: number, key: string) {
+    setEnvVars((prev) => prev.map((p, i) => (i === idx ? [key, p[1]] : p)));
+  }
+  function setEnvVal(idx: number, val: string) {
+    setEnvVars((prev) => prev.map((p, i) => (i === idx ? [p[0], val] : p)));
+  }
+  function addEnvRow() {
+    setEnvVars((prev) => [...prev, ["", ""]]);
+  }
+  function removeEnvRow(idx: number) {
+    setEnvVars((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      return next.length === 0 ? [["", ""]] : next;
     });
   }
 
@@ -772,8 +831,8 @@ export default function NewAgentPage() {
                 </label>
               </div>
               <p className="text-xs text-muted-foreground">
-                Injected into every session container. Stored in DB.
-                Per-session env vars take precedence over these.
+                Injected into every session container. Stored encrypted in DB.
+                Per-session env vars (set at session create) take precedence.
               </p>
               <div className="rounded-lg border bg-card">
                 <ul className="divide-y">

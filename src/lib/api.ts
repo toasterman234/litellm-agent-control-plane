@@ -168,6 +168,19 @@ export interface SessionRow {
   // Idle window after which the reconciler reaps a `ready` sandbox. Sent
   // by the backend so the UI doesn't hardcode SESSION_IDLE_TIMEOUT_MS.
   idle_timeout_ms?: number;
+  // Populated when bring-up dies and status flips to `failed`. The
+  // creating-state UI surfaces this verbatim so the user knows why the
+  // sandbox never came up.
+  failure_reason?: string | null;
+  // Fine-grained bring-up phase, written by the platform's bring-up
+  // orchestrator and (for container-side steps) by the in-sandbox harness.
+  // Null on legacy rows created before the column existed — SpawnProgress
+  // falls back to a wall-clock approximation in that case. See the server
+  // SessionPhase union for the closed set of values.
+  phase?: string | null;
+  // Optional human-readable detail for the current phase. Rendered as a
+  // small subtitle under the active step.
+  phase_detail?: string | null;
 }
 
 /**
@@ -564,6 +577,116 @@ export function restartSession(
     undefined,
     init,
   );
+}
+
+// ---------- Session diagnose (one-shot debug bundle) ----------
+
+/**
+ * Shape returned by `GET /sessions/{id}/diagnose`. The endpoint is
+ * intentionally permissive — every sub-section can be `{ exists: false }`,
+ * `{ error: string }`, or partial. We keep everything `unknown` and narrow
+ * inside the UI so a schema change on the backend doesn't break the build.
+ */
+export interface DiagnoseDetectedIssue {
+  code: string;
+  severity: "high" | "med" | "info";
+  message: string;
+  recommended_action?: string;
+}
+
+export interface DiagnoseResponse {
+  session?: unknown;
+  agent?: unknown;
+  pod?: unknown;
+  sandbox_cr?: unknown;
+  service?: unknown;
+  pod_logs_tail?: unknown;
+  node?: unknown;
+  image_cache?: unknown;
+  warm_pool?: unknown;
+  harness_probe?: unknown;
+  detected_issues?: DiagnoseDetectedIssue[];
+  notes?: unknown;
+  [key: string]: unknown;
+}
+
+/**
+ * Fetch the one-shot debug bundle for a session. The backend gathers pod,
+ * service, node, warm-pool, image-cache, and harness-probe state in parallel
+ * and runs a deterministic ruleset to surface known failure patterns. See
+ * the route handler at /api/v1/managed_agents/sessions/[session_id]/diagnose
+ * for the full response shape.
+ */
+export function getDiagnose(
+  sessionId: string,
+  init?: ApiInit,
+): Promise<DiagnoseResponse> {
+  return api<DiagnoseResponse>(
+    "GET",
+    `/v1/managed_agents/sessions/${encodeURIComponent(sessionId)}/diagnose`,
+    undefined,
+    init,
+  );
+}
+
+// ---------- Sandbox pod logs (creating-state debugging) ----------
+
+export interface SandboxLogsOpts {
+  /** Only return lines from the last N seconds. Backend caps at 3600. */
+  sinceSeconds?: number;
+  /** Tail no more than N lines. Backend caps at 5000. */
+  tailLines?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Fetch the raw stdout+stderr of the harness pod backing `sessionId`. The
+ * backend returns `text/plain` and is intentionally lenient — missing pods,
+ * transient k8s errors, and sessions without a `task_arn` yet all surface as
+ * 200 with empty (or a tiny marker line) text so the UI can poll without
+ * branching on error states. A 404 still means "session row doesn't exist".
+ */
+export async function getSandboxLogs(
+  sessionId: string,
+  opts: SandboxLogsOpts = {},
+): Promise<string> {
+  const params = new URLSearchParams();
+  if (typeof opts.sinceSeconds === "number") {
+    params.set("sinceSeconds", String(opts.sinceSeconds));
+  }
+  if (typeof opts.tailLines === "number") {
+    params.set("tailLines", String(opts.tailLines));
+  }
+  const qs = params.toString();
+  const path = `/v1/managed_agents/sessions/${encodeURIComponent(sessionId)}/sandbox_logs${qs ? `?${qs}` : ""}`;
+  const auth = authHeader();
+  const headers: Record<string, string> = {};
+  if (auth) headers["Authorization"] = auth;
+  const res = await fetch(`${PROXY_PREFIX}${path}`, {
+    method: "GET",
+    headers,
+    signal: opts.signal,
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearStoredMasterKey();
+      if (
+        typeof window !== "undefined" &&
+        !window.location.pathname.startsWith("/login")
+      ) {
+        const next = encodeURIComponent(
+          window.location.pathname + window.location.search,
+        );
+        window.location.href = `/login?next=${next}`;
+      }
+    }
+    // Read the body as text so non-JSON error pages (e.g. proxy 502) don't
+    // throw inside JSON.parse — the route itself returns JSON on error but
+    // upstream infra might not.
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text, text || `sandbox_logs ${res.status}`);
+  }
+  return res.text();
 }
 
 // ---------- Session messages (passthrough to harness) ----------

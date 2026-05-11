@@ -25,6 +25,7 @@ import * as k8s from "@kubernetes/client-node";
 import { fetch } from "undici";
 
 import { env } from "@/server/env";
+import { decrypt } from "@/server/integrations/core/crypto";
 import { renderMemoryBlock, topMemoriesForAgent } from "@/server/memory";
 import {
   TAG_AGENT_ID,
@@ -214,7 +215,7 @@ function buildMeta(opts: RunTaskOpts): RunTaskMeta {
 async function buildContainerEnv(
   opts: RunTaskOpts,
 ): Promise<Array<{ name: string; value: string }>> {
-  const { agent, env_vars } = opts;
+  const { agent, env_vars, session_id } = opts;
 
   // Pre-load top-N memories into AGENT_PROMPT so the agent has instinctive
   // awareness from turn 1. The search_memory tool inside the harness reads
@@ -223,6 +224,17 @@ async function buildContainerEnv(
   const memories = await topMemoriesForAgent(agent.agent_id);
   const memoryBlock = renderMemoryBlock(memories);
   const fullPrompt = [memoryBlock, agent.prompt ?? ""].filter(Boolean).join("\n\n");
+
+  // Phase-report wiring. The in-sandbox entrypoint POSTs to
+  // {PLATFORM_URL}/api/v1/managed_agents/sessions/{SESSION_ID}/phase with
+  // `Authorization: Bearer ${HARNESS_PROGRESS_TOKEN}`. Token == session_id
+  // (per-session scope, no separate key management). Warm-pool tasks don't
+  // yet have a session_id, so the harness falls back to a no-op if either
+  // SESSION_ID or PLATFORM_URL is empty — phase reports only land once the
+  // task has been claimed and reparented to a Session row, which is fine
+  // because the warm path skips the pod-spawn phases anyway.
+  const platformUrl = env.PLATFORM_INTERNAL_URL ?? "";
+  const phaseToken = session_id ?? "";
 
   const base: Record<string, string> = {
     REPO_URL: agent.repo_url ?? env.PREINSTALLED_GITHUB_REPO,
@@ -237,11 +249,24 @@ async function buildContainerEnv(
     AGENT_ID: agent.agent_id,
     LAP_BASE_URL: env.LAP_BASE_URL,
     LAP_AUTH_TOKEN: env.LAP_BASE_URL ? env.MASTER_KEY : "",
+    // Harness phase-report channel (see entrypoint.sh `report_phase`).
+    PLATFORM_URL: platformUrl,
+    SESSION_ID: phaseToken,
+    HARNESS_PROGRESS_TOKEN: phaseToken,
   };
-  // Same precedence as fargate.ts buildContainerEnv: passthrough -> per-session
-  // env_vars -> required base. Required keys always win.
+  // Precedence (lowest → highest): passthrough → agent-level env_vars → per-session env_vars → required base.
+  const rawAgentEnvVars =
+    agent.env_vars &&
+    typeof agent.env_vars === "object" &&
+    !Array.isArray(agent.env_vars)
+      ? (agent.env_vars as Record<string, string>)
+      : {};
+  const agentEnvVars = Object.fromEntries(
+    Object.entries(rawAgentEnvVars).map(([k, v]) => [k, decrypt(v)]),
+  );
   const merged: Record<string, string> = {
     ...env.containerEnvPassthrough,
+    ...agentEnvVars,
     ...(env_vars ?? {}),
     ...base,
   };
@@ -450,7 +475,7 @@ export async function stopTask(
 // waitRunningGetUrl — wait for pod Running + read assigned NodePort
 // ---------------------------------------------------------------------------
 
-async function readNodePort(name: string): Promise<number | null> {
+export async function readNodePort(name: string): Promise<number | null> {
   try {
     const svc = await coreApi().readNamespacedService({
       name: svcName(name),
@@ -486,7 +511,7 @@ async function readNodePort(name: string): Promise<number | null> {
  * spin until DEFAULT_RUNNING_TIMEOUT_MS. The contract is verified by the
  * spawn smoke test ("First spawn lands a Sandbox + Service, reaches ready").
  */
-async function readPodPhase(
+export async function readPodPhase(
   name: string,
 ): Promise<{ phase: string | undefined; reason: string | undefined }> {
   try {
@@ -551,7 +576,7 @@ async function discoverNodeHost(): Promise<string> {
   throw new Error("no Ready node with ExternalIP found in cluster");
 }
 
-async function resolveNodeHost(): Promise<string> {
+export async function resolveNodeHost(): Promise<string> {
   const cfg = env.K8S_NODE_HOST;
   if (!cfg || cfg === "auto") return discoverNodeHost();
   return cfg;
@@ -695,6 +720,67 @@ function phaseToStatus(phase: string | undefined): string {
       return "STOPPED";
     default:
       return "UNKNOWN";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// readPodLogs — fetch stdout+stderr of the harness container so the UI can
+// show a live "sandbox terminal" panel during creating-state spawns.
+//
+// The k8s log endpoint already merges stdout+stderr at the kubelet, so a
+// single call covers both streams. `sinceSeconds` / `tailLines` keep the
+// payload bounded — the UI re-polls every ~1s, and a giant historical dump
+// per tick would be wasteful. Returns "" when the pod hasn't been created
+// yet (the Sandbox CR exists but the controller hasn't stamped the pod, or
+// the pod was already torn down) so callers can render an empty terminal
+// without special-casing NotFound.
+// ---------------------------------------------------------------------------
+
+export interface ReadPodLogsOpts {
+  sinceSeconds?: number;
+  tailLines?: number;
+  /** Bounds the K8s API call so a stuck apiserver doesn't wedge the route. */
+  timeoutMs?: number;
+}
+
+const DEFAULT_LOG_TIMEOUT_MS = 10_000;
+
+export async function readPodLogs(
+  task_arn: string,
+  opts: ReadPodLogsOpts = {},
+): Promise<string> {
+  const { sinceSeconds, tailLines, timeoutMs = DEFAULT_LOG_TIMEOUT_MS } = opts;
+  // AbortSignal.timeout doesn't propagate into the kubernetes client (it
+  // builds its own request). Race the call against a timeout instead so we
+  // never block the request thread for more than `timeoutMs`.
+  const call = coreApi().readNamespacedPodLog({
+    name: task_arn,
+    namespace: env.K8S_NAMESPACE,
+    container: CONTAINER_NAME,
+    sinceSeconds,
+    tailLines,
+  });
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(
+      () => reject(new Error(`readPodLogs timeout after ${timeoutMs}ms`)),
+      timeoutMs,
+    ),
+  );
+  try {
+    const res = (await Promise.race([call, timeout])) as unknown;
+    // Newer client-node versions return the string directly; older versions
+    // wrap it in `{ body }`. Cover both.
+    if (typeof res === "string") return res;
+    if (res && typeof res === "object" && "body" in res) {
+      const body = (res as { body?: unknown }).body;
+      return typeof body === "string" ? body : "";
+    }
+    return "";
+  } catch (err) {
+    // Pod not (yet) created or already gone: return empty so the UI keeps
+    // polling without rendering an error. Anything else bubbles.
+    if (isNotFound(err)) return "";
+    throw err;
   }
 }
 

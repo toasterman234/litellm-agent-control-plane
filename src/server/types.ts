@@ -14,6 +14,7 @@
 
 import type { Agent, Memory, Session, WarmTask } from "@prisma/client";
 import { z } from "zod";
+import { decrypt, encrypt } from "@/server/integrations/core/crypto";
 
 // ============================================================================
 // DB row types (re-export from Prisma, do not redefine)
@@ -27,10 +28,32 @@ export type MemoryRow = Memory;
 export type SessionStatus = "creating" | "ready" | "failed" | "dead";
 export type WarmTaskStatus = "provisioning" | "warm" | "claimed" | "dead";
 
+/**
+ * Closed set of bring-up phase values written to `Session.phase`. The
+ * platform owns the pod-spawn phases (everything up to and including
+ * `harness_ready`); the in-sandbox harness owns the container-side phases
+ * (`cloning_repo`, `installing_deps`, `harness_listening`). The
+ * /sessions/{id}/phase endpoint whitelists the harness-side subset so the
+ * sandbox can't write arbitrary states.
+ *
+ * Kept as a string union (not a TS enum) so it serialises cleanly to JSON
+ * and survives Prisma's `String?` column without an additional mapping
+ * layer.
+ */
+export type SessionPhase =
+  | "creating_sandbox"
+  | "pod_pending"
+  | "pod_running"
+  | "waiting_harness"
+  | "harness_ready"
+  | "cloning_repo"
+  | "installing_deps"
+  | "harness_listening"
+  | "ready";
+
 // ============================================================================
 // Env var validation constants — shared by CreateAgentBody + CreateSessionBody
 // ============================================================================
-
 /**
  * Keys reserved by the harness runtime. Agent-level and per-session `env_vars`
  * cannot override any of these — the route returns 400 if a caller tries.
@@ -65,11 +88,21 @@ export const CreateAgentBody = z.object({
   model: z.string().min(1),
   prompt: z.string().optional(),
   tools: z.array(z.unknown()).default([]),
+  // Which harness binary the Fargate container runs. Picks the task
+  // definition family — opencode (default) or claude-agent-sdk. Kept open
+  // as `string` so adding a third harness is a one-line env change.
   harness_id: z.string().optional(),
   repo_url: z.string().url().optional(),
   branch: z.string().optional(),
   pfp_url: z.string().optional(),
   mcp_servers: z.array(z.string()).default([]),
+  /**
+   * Agent-level env vars persisted to the DB and injected into every
+   * session container. Same constraints as CreateSessionBody.env_vars.
+   * Use for long-lived secrets like GITHUB_TOKEN or API keys the agent
+   * always needs. Per-session env_vars (from CreateSessionBody) take
+   * precedence over these when both are present for the same key.
+   */
   env_vars: z
     .record(z.string().regex(ENV_VAR_NAME_RE, "invalid env var name"), z.string())
     .optional()
@@ -209,6 +242,17 @@ export interface ApiSession {
   // alongside last_seen_at so the UI shows an accurate countdown without
   // hardcoding the constant.
   idle_timeout_ms: number;
+  // Populated when status flips to `failed`. The UI surfaces this verbatim
+  // on the session page so the user can see why bring-up died instead of
+  // staring at a stuck "creating" spinner.
+  failure_reason: string | null;
+  // Fine-grained bring-up phase. Null on legacy rows created before the
+  // phase column existed; the UI falls back to wall-clock thresholds when
+  // null. See `SessionPhase` for the closed set of values.
+  phase: string | null;
+  // Optional human-readable detail for the current phase. Rendered as a
+  // small subtitle under the active step in the spawn-progress card.
+  phase_detail: string | null;
 }
 
 // Admin / observability — wire shape returned by GET /api/v1/admin/stats.
@@ -344,6 +388,15 @@ export interface ServerEnv {
    * In docker-compose dev, "http://host.docker.internal:3000" reaches the host.
    */
   LAP_BASE_URL: string;
+  /**
+   * URL that an in-sandbox harness uses to POST progress events back to the
+   * platform's /sessions/{id}/phase endpoint. Distinct from LAP_BASE_URL
+   * because the harness-side reports may need to reach the platform on a
+   * cluster-internal address (e.g. `http://litellm-agent-platform.default.svc:3000`)
+   * while LAP_BASE_URL is the external https URL the memory tools rely on.
+   * Empty string disables harness phase reports (the curl just no-ops).
+   */
+  PLATFORM_INTERNAL_URL: string;
   CONTAINER_PORT: number; // default 4096
   RECONCILE_INTERVAL_SECONDS: number; // default 60
   // When set, bypasses K8s pod launch; routes all sessions to this URL.
@@ -483,7 +536,29 @@ export function httpError(status: number, detail: unknown): never {
 // Row → API mappers (one source of truth so all handlers agree)
 // ============================================================================
 
+/** Encrypt each value in an env vars map before persisting. */
+export function encryptEnvVars(
+  vars: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(vars).map(([k, v]) => [k, encrypt(v)]),
+  );
+}
+
+/** Decrypt each value in a stored env vars map. */
+function decryptEnvVars(stored: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(stored).map(([k, v]) => [k, decrypt(String(v))]),
+  );
+}
+
 export function toApiAgent(row: AgentRow): ApiAgent {
+  const rawEnvVars =
+    row.env_vars &&
+    typeof row.env_vars === "object" &&
+    !Array.isArray(row.env_vars)
+      ? (row.env_vars as Record<string, unknown>)
+      : {};
   return {
     id: row.agent_id,
     name: row.agent_name ?? null,
@@ -498,12 +573,7 @@ export function toApiAgent(row: AgentRow): ApiAgent {
           (v): v is string => typeof v === "string",
         )
       : [],
-    env_vars:
-      row.env_vars &&
-      typeof row.env_vars === "object" &&
-      !Array.isArray(row.env_vars)
-        ? (row.env_vars as Record<string, string>)
-        : {},
+    env_vars: decryptEnvVars(rawEnvVars),
     created_at: row.created_at.toISOString(),
   };
 }
@@ -546,6 +616,9 @@ export function toApiSession(
     created_at: row.created_at.toISOString(),
     last_seen_at: row.last_seen_at ? row.last_seen_at.toISOString() : null,
     idle_timeout_ms: SESSION_IDLE_TIMEOUT_MS,
+    failure_reason: row.failure_reason ?? null,
+    phase: row.phase ?? null,
+    phase_detail: row.phase_detail ?? null,
   };
 }
 
