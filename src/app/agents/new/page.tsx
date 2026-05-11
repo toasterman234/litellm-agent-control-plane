@@ -594,7 +594,7 @@ export default function NewAgentPage() {
                 </label>
               </div>
               <p className="text-xs text-muted-foreground">
-                Injected into every session container. Stored encrypted in DB.
+                Injected into every session container. Stored unencrypted in DB — avoid long-lived production secrets.
                 Per-session env vars (set at session create) take precedence.
               </p>
               <div className="rounded-lg border bg-card">
