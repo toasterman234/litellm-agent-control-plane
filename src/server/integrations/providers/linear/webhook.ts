@@ -53,7 +53,7 @@ interface LinearAgentSessionEvent {
   organizationId?: string;
   appUserId?: string;
   agentSession?: LinearAgentSession;
-  agentActivity?: { body?: string | null } | null;
+  agentActivity?: { body?: string | null; userId?: string | null } | null;
 }
 
 export function buildWebhookAdapter(): WebhookAdapter {
@@ -78,21 +78,12 @@ export function buildWebhookAdapter(): WebhookAdapter {
       const evt = payload as LinearAgentSessionEvent;
       if (evt?.type !== "AgentSessionEvent") return { kind: "ignore" };
 
-      // Dedup the agent's own activity echoing back.
-      const appUserId = (install.metadata as Record<string, unknown>)
-        ?.app_user_id;
-      if (
-        typeof appUserId === "string" &&
-        typeof evt.appUserId === "string" &&
-        evt.appUserId === appUserId
-      ) {
-        return { kind: "ignore" };
-      }
-
       const externalSessionId = evt.agentSession?.id;
       if (!externalSessionId) return { kind: "ignore" };
 
       if (evt.action === "created") {
+        // Delegation start. No self-echo concern — Linear only fires
+        // `created` on a fresh agent session (user-initiated).
         return {
           kind: "new_task",
           external_session_id: externalSessionId,
@@ -104,6 +95,24 @@ export function buildWebhookAdapter(): WebhookAdapter {
       if (evt.action === "prompted") {
         const body = evt.agentActivity?.body?.trim();
         if (!body) return { kind: "ignore" };
+
+        // Dedup self-echo: if Linear ever fires a `prompted` event whose
+        // agentActivity was created by our own app-user, ignore it so the
+        // dispatcher doesn't feedback-loop on the agent's own output.
+        // Top-level `appUserId` on the payload identifies the recipient,
+        // not the source — we use `agentActivity.userId` here, which is
+        // the activity's creator when Linear sends one.
+        const appUserId = (install.metadata as Record<string, unknown>)
+          ?.app_user_id;
+        const activityUserId = evt.agentActivity?.userId;
+        if (
+          typeof appUserId === "string" &&
+          typeof activityUserId === "string" &&
+          activityUserId === appUserId
+        ) {
+          return { kind: "ignore" };
+        }
+
         return {
           kind: "followup",
           external_session_id: externalSessionId,
