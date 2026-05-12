@@ -331,7 +331,7 @@ export async function runTask(
           containers: [
             {
               name: CONTAINER_NAME,
-              image: env.K8S_HARNESS_IMAGE,
+              image: agent.task_definition_arn || env.K8S_HARNESS_IMAGE,
               imagePullPolicy: env.K8S_IMAGE_PULL_POLICY,
               ports: [{ containerPort: agent.container_port }],
               env: await buildContainerEnv(opts),

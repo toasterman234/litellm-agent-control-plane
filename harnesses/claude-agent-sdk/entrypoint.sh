@@ -68,11 +68,12 @@ if [ -n "${REPO_URL:-}" ]; then
   fi
 fi
 
-# claude-agent-sdk bakes its deps into the image at build time, so there's
-# no runtime `npm install`. Still report installing_deps for parity with
-# how the harness will evolve and to give the UI a distinct beat between
-# clone-finished and the listener actually accepting connections.
+# Install per-agent Python packages if AGENT_REQUIREMENTS is set.
+# Content is the requirements.txt body (newline-separated pip specs).
 report_phase installing_deps
+if [ -n "${AGENT_REQUIREMENTS:-}" ]; then
+  printf '%s\n' "$AGENT_REQUIREMENTS" | uv pip install --system -q -r /dev/stdin
+fi
 
 # Clone-only token: wipe so the LLM can't `printenv GIT_TOKEN` it back.
 unset GIT_TOKEN
