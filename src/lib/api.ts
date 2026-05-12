@@ -414,6 +414,32 @@ export function listAgents(): Promise<AgentRow[]> {
   return api<AgentRow[]>("GET", "/v1/managed_agents/agents");
 }
 
+export interface ListAgentsParams {
+  limit?: number;
+  offset?: number;
+  sort?: "created_at" | "name" | "harness_id";
+  order?: "asc" | "desc";
+}
+
+export interface AgentListResponse {
+  data: AgentRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export function listAgentsPaginated(
+  params: ListAgentsParams = {},
+): Promise<AgentListResponse> {
+  const qs = new URLSearchParams();
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.offset !== undefined) qs.set("offset", String(params.offset));
+  if (params.sort) qs.set("sort", params.sort);
+  if (params.order) qs.set("order", params.order);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return api<AgentListResponse>("GET", `/v1/managed_agents/agents${suffix}`);
+}
+
 export function getAgent(id: string): Promise<AgentRow> {
   return api<AgentRow>(
     "GET",

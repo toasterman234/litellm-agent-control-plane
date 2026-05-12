@@ -25,12 +25,35 @@ import type { Prisma } from "@prisma/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const VALID_SORT_FIELDS = new Set(["created_at", "name", "harness_id"]);
+const VALID_ORDERS = new Set(["asc", "desc"]);
+
 export const GET = wrap(async (req: Request) => {
   assertAuth(req);
-  const rows = await prisma.agent.findMany({
-    orderBy: { created_at: "desc" },
-  });
-  return Response.json(rows.map(toApiAgent));
+  const url = new URL(req.url);
+
+  const limitRaw = parseInt(url.searchParams.get("limit") ?? "50", 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+
+  const offsetRaw = parseInt(url.searchParams.get("offset") ?? "0", 10);
+  const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
+
+  const sortParam = url.searchParams.get("sort") ?? "created_at";
+  const sort = VALID_SORT_FIELDS.has(sortParam) ? sortParam : "created_at";
+
+  const orderParam = url.searchParams.get("order") ?? "desc";
+  const order = VALID_ORDERS.has(orderParam) ? (orderParam as "asc" | "desc") : "desc";
+
+  const [rows, total] = await Promise.all([
+    prisma.agent.findMany({
+      orderBy: { [sort]: order },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.agent.count(),
+  ]);
+
+  return Response.json({ data: rows.map(toApiAgent), total, limit, offset });
 });
 
 export const POST = wrap(async (req: Request) => {
