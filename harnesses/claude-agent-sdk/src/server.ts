@@ -224,6 +224,7 @@ async function runTurn(
     nextGlobalIdx: 0,
     currentSdkMsgId: null,
     blockIdxsBySdkMsgId: new Map(),
+    emittedBlockCountBySdkMsgId: new Map(),
   };
 
   try {
@@ -298,10 +299,22 @@ interface TurnStreamState {
   // belong to this id until the next message_start fires.
   currentSdkMsgId: string | null;
   // Per-SDK-message: the array of globalIdxs allocated for its blocks, in
-  // content-index order. Lookups: `assistant` events arrive AFTER all the
-  // blocks have been started, so we just read straight from this map by
-  // ev.message.id.
+  // content_block_start order. Lookups: each block-start pushes its
+  // globalIdx at the SDK's stream content_block index.
   blockIdxsBySdkMsgId: Map<string, number[]>;
+  // Per-SDK-message: count of content blocks already consumed by `assistant`
+  // events on this message. With includePartialMessages: true the SDK fires
+  // one `assistant` event PER content block (each carrying just the new
+  // block, not the cumulative message content), so the event's local
+  // content[i] index does NOT line up with the stream's content_block.index
+  // — content_block.index 0 emits an assistant event with content=[blockA],
+  // then content_block.index 1 emits a separate assistant event with
+  // content=[blockB]. Without this offset, the handler would always look up
+  // `idxs[0]` for blockB and reuse blockA's partID, overwriting the earlier
+  // part. We track how many content blocks the assistant events have already
+  // produced for this SDK message; the next event's content[i] is at stream
+  // index `emitted + i`.
+  emittedBlockCountBySdkMsgId: Map<string, number>;
 }
 
 function handleSdkEvent(
@@ -351,10 +364,22 @@ function handleSdkEvent(
     // includePartialMessages off, or future SDK behavior change).
     const sdkMsgId: string | undefined = ev.message.id;
     const idxs = (sdkMsgId ? turn.blockIdxsBySdkMsgId.get(sdkMsgId) : undefined) ?? [];
+    // Translate this assistant event's local content index to the stream's
+    // content_block.index. With includePartialMessages: true the SDK fires
+    // INCREMENTAL assistant events — one per content_block_stop, each
+    // carrying only the new block (so content_types arrive as ['thinking'],
+    // then ['tool_use'], then ['text'], etc, all with local idx=0). Without
+    // this offset, the tool_use block's local idx=0 would resolve to
+    // idxs[0] (the thinking block's globalIdx) and we'd emit the tool
+    // payload under the thinking part's partID, overwriting it on the
+    // client and producing empty / wrong-content cards in the UI.
+    const baseOffset =
+      (sdkMsgId ? turn.emittedBlockCountBySdkMsgId.get(sdkMsgId) : 0) ?? 0;
     content.forEach((block: { type: string; text?: string; thinking?: string; name?: string; id?: string; input?: unknown }, idx: number) => {
       // Stable per-block id. Pairs this authoritative update with any deltas
       // the UI already accumulated under the same partID.
-      const globalIdx = idxs[idx] ?? turn.nextGlobalIdx++;
+      const streamIdx = baseOffset + idx;
+      const globalIdx = idxs[streamIdx] ?? turn.nextGlobalIdx++;
       const partId = `${msgId}_b${globalIdx}`;
       if (block.type === "text") {
         const part: PlatformPart = {
@@ -387,6 +412,15 @@ function handleSdkEvent(
         emit(s, "message.part.updated", { messageID: msgId, part });
       }
     });
+    // Advance the offset by the number of blocks just consumed so the next
+    // incremental assistant event for this SDK message resolves to the
+    // correct stream content_block.index.
+    if (sdkMsgId) {
+      turn.emittedBlockCountBySdkMsgId.set(
+        sdkMsgId,
+        baseOffset + content.length,
+      );
+    }
   } else if (ev.type === "user" && ev.message) {
     // Tool results come back as `user` messages with `tool_result` blocks;
     // attach the output to the matching tool part so the UI can show it.
@@ -442,6 +476,7 @@ function handleSdkEvent(
     if (inner?.type === "message_start" && inner.message?.id) {
       turn.currentSdkMsgId = inner.message.id;
       turn.blockIdxsBySdkMsgId.set(inner.message.id, []);
+      turn.emittedBlockCountBySdkMsgId.set(inner.message.id, 0);
       return;
     }
     if (

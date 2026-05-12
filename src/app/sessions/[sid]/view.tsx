@@ -526,7 +526,34 @@ export default function SessionThreadView() {
                 part.type === "thinking" ||
                 part.type === "tool"
               ) {
-                partsState.set(part.id, part as HarnessMessagePart);
+                // For tool parts, merge the new payload onto the existing
+                // one rather than replace it outright. The harness emits
+                // the same partID twice in a normal flow (once on
+                // tool_use with state.input, again on tool_result with
+                // state.output) and the second emit is supposed to carry
+                // the full mutated state — but defensively merging here
+                // means a future server bug that drops an input/output
+                // field on the second emit won't blank out the card.
+                if (part.type === "tool") {
+                  const prior = partsState.get(part.id);
+                  if (prior && prior.type === "tool") {
+                    const priorState =
+                      (prior.state as Record<string, unknown> | undefined) ??
+                      {};
+                    const nextState =
+                      (part.state as Record<string, unknown> | undefined) ??
+                      {};
+                    partsState.set(part.id, {
+                      ...prior,
+                      ...part,
+                      state: { ...priorState, ...nextState },
+                    } as HarnessMessagePart);
+                  } else {
+                    partsState.set(part.id, part as HarnessMessagePart);
+                  }
+                } else {
+                  partsState.set(part.id, part as HarnessMessagePart);
+                }
                 renderStreaming();
               }
             }
