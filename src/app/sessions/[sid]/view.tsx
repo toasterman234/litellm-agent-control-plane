@@ -43,12 +43,6 @@ import {
   sendMessageStream,
 } from "@/lib/api";
 import { AgentAvatar } from "@/components/agent-avatar";
-import {
-  SdkStreamPanel,
-  useSdkMessageStream,
-  type SdkStreamStatus,
-} from "./sdk-stream";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 type LocalRole = "user" | "assistant";
 
@@ -232,13 +226,6 @@ export default function SessionThreadView() {
     if (session) return session.agent_id;
     return "";
   }, [session, agent]);
-
-  // Live SDKMessage stream — additive next to the historical /messages
-  // replay below. We only open the EventSource once the session is `ready`;
-  // the harness's event bus isn't running before then.
-  const sdkStreamEnabled = session?.status === "ready" && !!sessionId;
-  const { messages: sdkMessages, status: sdkStreamStatus } =
-    useSdkMessageStream(sessionId, sdkStreamEnabled);
 
   // Pull the full opencode thread and replace local state. Source of truth
   // lives in the harness — POST /message only returns the final assistant
@@ -604,8 +591,6 @@ export default function SessionThreadView() {
         agent={agent}
         agentName={currentAgentName}
         messages={messages}
-        sdkMessages={sdkMessages}
-        sdkStreamStatus={sdkStreamStatus}
         loading={loading}
         error={error}
         hasInProgress={hasInProgress}
@@ -633,8 +618,6 @@ interface MainPanelProps {
   agent: AgentRow | null;
   agentName: string;
   messages: LocalMessage[];
-  sdkMessages: SDKMessage[];
-  sdkStreamStatus: SdkStreamStatus;
   loading: boolean;
   error: string | null;
   hasInProgress: boolean;
@@ -655,8 +638,6 @@ function MainPanel({
   agent,
   agentName,
   messages,
-  sdkMessages,
-  sdkStreamStatus,
   loading,
   error,
   hasInProgress,
@@ -856,19 +837,6 @@ function MainPanel({
             </div>
           )}
 
-          {/*
-            Live SDKMessage stream from the harness's new
-            `claude_sdk_message` envelope. Additive — the historical
-            /messages replay below is still the source of truth for the
-            legacy `message.part.*` wire format. If the same logical
-            message appears in both, the streaming row is fresher and
-            wins by being rendered first.
-          */}
-          <SdkStreamPanel
-            messages={sdkMessages}
-            status={sdkStreamStatus}
-          />
-
           {messages.map((m, i) => (
             <MessageBlock
               key={m.id}
@@ -1042,10 +1010,10 @@ function PartBlock({ part }: { part: HarnessMessagePart }) {
 }
 
 function ThinkingBlock({ text }: { text: string }) {
-  // Claude.ai-style: a small "Thinking" pill collapsed by default; clicking
-  // reveals the full reasoning in a subdued gray box. Default-collapsed so
-  // it doesn't compete visually with the actual response.
-  const [open, setOpen] = useState(false);
+  // Default-expanded: users were repeatedly clicking each block open to
+  // read the model's reasoning, and the collapsed pill was confused with
+  // a nested panel when several blocks stacked.
+  const [open, setOpen] = useState(true);
   return (
     <div className="rounded-md border border-gray-200 bg-gray-50/60 text-[13px] text-gray-600">
       <button
