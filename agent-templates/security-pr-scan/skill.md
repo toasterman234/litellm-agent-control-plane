@@ -25,16 +25,20 @@ gh pr diff <PR_URL>
 ### Step 2 — Secrets scan
 
 ```bash
-gitleaks detect --source . --no-git 2>/dev/null || echo "gitleaks not available, scanning manually"
+gitleaks detect --source . --no-git 2>/dev/null; gitleaks_exit=$?; [ $gitleaks_exit -eq 2 ] && echo "gitleaks not available, scanning manually"
 ```
+
+Note: exit code 1 means findings were detected (expected); exit code 2 means gitleaks could not run.
 
 Flag: API keys, tokens, passwords, PII in changed lines.
 
 ### Step 3 — SAST scan
 
 ```bash
-semgrep --config=auto --quiet 2>/dev/null || echo "semgrep not available"
+semgrep --config=auto --quiet 2>/dev/null; semgrep_exit=$?; [ $semgrep_exit -ge 2 ] && echo "semgrep not available"
 ```
+
+Note: exit code 1 means findings were detected (expected); exit code 2+ means semgrep could not run.
 
 Focus: injection (SQL/cmd/XSS), broken access control, insecure deserialization, crypto misuse.
 

@@ -32,15 +32,19 @@ RUN set -eux; \
     tar -xz -C /usr/local/bin -f /tmp/gitleaks.tar.gz gitleaks; \
     rm /tmp/gitleaks.tar.gz /tmp/gitleaks_checksums.txt
 
-WORKDIR /app
-# Copy pre-built node_modules from host; overwrite the @lap/managed-tools symlink
-# with the real directory so Node can resolve it at runtime.
-COPY harnesses/claude-agent-sdk/package.json ./
-COPY harnesses/claude-agent-sdk/node_modules/ ./node_modules/
-COPY managed-tools/ ./node_modules/@lap/managed-tools/
+# Create non-root user — claude's bypassPermissions mode is blocked as root
+RUN useradd -m -u 1001 agent
 
-# Install platform-native claude binary (npm install for just this one package avoids
-# the file: dep resolution bug that affects full npm install).
+WORKDIR /home/agent
+
+# Copy pre-built node_modules + dist. Overwrite @lap/managed-tools symlink with real dir.
+COPY --chown=agent:agent harnesses/claude-agent-sdk/package.json ./
+COPY --chown=agent:agent harnesses/claude-agent-sdk/node_modules/ ./node_modules/
+COPY --chown=agent:agent managed-tools/ ./node_modules/@lap/managed-tools/
+COPY --chown=agent:agent harnesses/claude-agent-sdk/dist/ ./dist/
+
+# Install platform-native claude binary as the agent user
+USER agent
 RUN arch=$(uname -m) && \
     if [ "$arch" = "aarch64" ]; then \
       npm install @anthropic-ai/claude-agent-sdk-linux-arm64 --no-save --legacy-peer-deps; \
@@ -48,20 +52,12 @@ RUN arch=$(uname -m) && \
       npm install @anthropic-ai/claude-agent-sdk-linux-x64 --no-save --legacy-peer-deps; \
     fi
 
-COPY harnesses/claude-agent-sdk/dist/ ./dist/
-
-# Run as non-root — claude's --dangerously-skip-permissions (bypassPermissions) is
-# blocked when running as root/sudo for security reasons.
-RUN useradd -m -u 1001 agent
-USER agent
-WORKDIR /home/agent
-# Re-copy app files with correct ownership
-RUN cp -r /app/node_modules ./node_modules && cp -r /app/dist ./dist && cp /app/package.json .
+RUN echo '#!/bin/sh' > /home/agent/entrypoint.sh && \
+    echo 'mkdir -p ~/.claude' >> /home/agent/entrypoint.sh && \
+    echo 'echo "{\"env\":{\"ANTHROPIC_BASE_URL\":\"${LITELLM_API_BASE%/}\",\"ANTHROPIC_AUTH_TOKEN\":\"${LITELLM_API_KEY}\",\"ANTHROPIC_API_KEY\":\"${LITELLM_API_KEY}\"}}" > ~/.claude/settings.json' >> /home/agent/entrypoint.sh && \
+    echo 'exec node /home/agent/dist/server.js' >> /home/agent/entrypoint.sh && \
+    chmod +x /home/agent/entrypoint.sh
 
 ENV PORT=4096
 EXPOSE 4096
-
-# Entrypoint writes ~/.claude/settings.json from runtime env vars.
-RUN printf '#!/bin/sh\nmkdir -p ~/.claude\nprintf '"'"'{"env":{"ANTHROPIC_BASE_URL":"%s","ANTHROPIC_AUTH_TOKEN":"%s","ANTHROPIC_API_KEY":"%s"}}'"'"' \\\n  "${LITELLM_API_BASE%%/}" "${LITELLM_API_KEY}" "${LITELLM_API_KEY}" \\\n  > ~/.claude/settings.json\nexec node /home/agent/dist/server.js\n' > /home/agent/entrypoint.sh && chmod +x /home/agent/entrypoint.sh
-
 CMD ["/home/agent/entrypoint.sh"]
