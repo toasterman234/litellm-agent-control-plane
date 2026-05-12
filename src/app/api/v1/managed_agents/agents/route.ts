@@ -25,7 +25,7 @@ import type { Prisma } from "@prisma/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const VALID_SORT_FIELDS = new Set(["created_at", "name", "harness_id"]);
+const VALID_SORT_FIELDS = new Set(["created_at", "name", "harness_id", "sessions"]);
 const VALID_ORDERS = new Set(["asc", "desc"]);
 
 export const GET = wrap(async (req: Request) => {
@@ -44,16 +44,27 @@ export const GET = wrap(async (req: Request) => {
   const orderParam = url.searchParams.get("order") ?? "desc";
   const order = VALID_ORDERS.has(orderParam) ? (orderParam as "asc" | "desc") : "desc";
 
+  const orderBy =
+    sort === "sessions"
+      ? { sessions: { _count: order } }
+      : { [sort]: order };
+
   const [rows, total] = await Promise.all([
     prisma.agent.findMany({
-      orderBy: { [sort]: order },
+      orderBy,
       take: limit,
       skip: offset,
+      include: { _count: { select: { sessions: true } } },
     }),
     prisma.agent.count(),
   ]);
 
-  return Response.json({ data: rows.map(toApiAgent), total, limit, offset });
+  return Response.json({
+    data: rows.map((r) => ({ ...toApiAgent(r), session_count: r._count.sessions })),
+    total,
+    limit,
+    offset,
+  });
 });
 
 export const POST = wrap(async (req: Request) => {

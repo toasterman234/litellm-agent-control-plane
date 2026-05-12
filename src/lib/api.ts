@@ -152,6 +152,7 @@ export interface AgentRow {
   mcp_servers?: string[];
   env_vars?: Record<string, string>;
   created_at?: string | null;
+  session_count?: number;
 }
 
 export interface SessionRow {
