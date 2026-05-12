@@ -51,8 +51,9 @@ function agentLastActiveMs(sessions: SessionRow[], agent: AgentRow): number {
     .map((t) => new Date(t).getTime())
     .filter((t) => !Number.isNaN(t));
   if (times.length > 0) return Math.max(...times);
-  const fallback = agent.created_at ? new Date(agent.created_at).getTime() : 0;
-  return Number.isNaN(fallback) ? 0 : fallback;
+  // No sessions — return 0 so callers display "—" rather than misleading
+  // users into thinking the agent was active at creation time.
+  return 0;
 }
 
 function agentLastActive(sessions: SessionRow[], agent: AgentRow): string | null {
