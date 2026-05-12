@@ -411,7 +411,7 @@ export interface UpdateAgentRequest {
 }
 
 export function listAgents(): Promise<AgentRow[]> {
-  return api<AgentRow[]>("GET", "/v1/managed_agents/agents");
+  return api<AgentListResponse>("GET", "/v1/managed_agents/agents").then((r) => r.data);
 }
 
 export interface ListAgentsParams {
