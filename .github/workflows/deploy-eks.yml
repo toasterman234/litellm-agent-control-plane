@@ -155,17 +155,15 @@ jobs:
             --region "${{ secrets.AWS_REGION }}"
 
       - name: Update web deployment image
-        env:
-          IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
+          IMAGE="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/litellm-agent-platform:${{ github.sha }}"
           kubectl set image deployment/litellm-web \
             web="$IMAGE" \
             -n default
 
       - name: Update worker deployment image
-        env:
-          IMAGE: ${{ needs.build-push.outputs.image }}
         run: |
+          IMAGE="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/litellm-agent-platform:${{ github.sha }}"
           kubectl set image deployment/litellm-worker \
             worker="$IMAGE" \
             -n default
