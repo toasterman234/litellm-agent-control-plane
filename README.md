@@ -6,6 +6,7 @@ Self-hosted infrastructure for running multiple agents in production. Manages:
 
 - Per-team / per-context sandboxes
 - Session continuity across pod restarts and upgrades
+- **Vault** — sidecar that holds your agents' secrets and swaps stub values for real ones at egress, so the agent process never sees the underlying token. See [`harnesses/vault/architecture.md`](./harnesses/vault/architecture.md).
 
 <img width="1997" height="1219" alt="Xnapper-2026-05-08-19 10 50" src="https://github.com/user-attachments/assets/c0c2c2f8-d9e2-4821-b73a-e3971dac5169" />
 
