@@ -418,6 +418,12 @@ export interface UpdateAgentRequest {
   mcp_servers?: string[];
   mcp_allowed_tools?: McpAllowedTools[];
   prompt?: string;
+  /**
+   * Replaces the agent's user-editable env_vars map. The PATCH route
+   * preserves any internal reserved-key entries (e.g. AGENT_REQUIREMENTS)
+   * that the user can't see. Re-encrypted at rest.
+   */
+  env_vars?: Record<string, string>;
 }
 
 export function listAgents(): Promise<AgentRow[]> {

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { AgentAvatar } from "@/components/agent-avatar";
 import { PfpUpload } from "@/components/pfp-upload";
 import { CallAgentSnippets } from "@/components/call-agent-snippets";
+import { EnvVarsEditor } from "@/components/env-vars-editor";
 import {
   AgentRow,
   ApiError,
@@ -158,6 +159,16 @@ export default function AgentDetailPage({ params }: PageProps) {
       setPfpSaving(false);
     }
   }
+
+  const handleEnvVarsSave = useCallback(
+    async (next: Record<string, string>) => {
+      if (!agent) return;
+      setError(null);
+      const updated = await updateAgent(agent.id, { env_vars: next });
+      setAgent(updated);
+    },
+    [agent],
+  );
 
   async function handleSpawn() {
     if (!agent || spawning) return;
@@ -445,6 +456,15 @@ export default function AgentDetailPage({ params }: PageProps) {
                     None
                   </span>
                 )}
+              </dd>
+
+              <dt className="text-muted-foreground">Env vars</dt>
+              <dd className="min-w-0">
+                <EnvVarsEditor
+                  value={agent.env_vars}
+                  onSave={handleEnvVarsSave}
+                  onError={(msg) => setError(msg)}
+                />
               </dd>
 
               {/* System prompt + attached skills. The base prompt is everything

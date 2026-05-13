@@ -78,8 +78,8 @@ export const RESERVED_ENV_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const ENV_VARS_MAX_KEYS = 50;
-const ENV_VARS_MAX_BYTES = 16_384;
+export const ENV_VARS_MAX_KEYS = 50;
+export const ENV_VARS_MAX_BYTES = 16_384;
 
 // ============================================================================
 // API request schemas (zod) — handlers parse with these
@@ -131,6 +131,26 @@ export const UpdateAgentBody = z.object({
   mcp_servers: z.array(z.string()).optional(),
   harness_image: z.string().optional(),
   prompt: z.string().optional(),
+  /**
+   * Replace the agent's env_vars map. Same constraints as the CreateAgentBody
+   * version: max keys, max byte size, reserved keys blocked. The PATCH route
+   * encrypts each value before persisting (mirrors the create flow).
+   */
+  env_vars: z
+    .record(z.string().regex(ENV_VAR_NAME_RE, "invalid env var name"), z.string())
+    .optional()
+    .refine((v) => !v || Object.keys(v).length <= ENV_VARS_MAX_KEYS, {
+      message: `env_vars: max ${ENV_VARS_MAX_KEYS} keys`,
+    })
+    .refine((v) => !v || JSON.stringify(v).length <= ENV_VARS_MAX_BYTES, {
+      message: `env_vars: total size must be ≤ ${ENV_VARS_MAX_BYTES} bytes`,
+    })
+    .refine(
+      (v) => !v || !Object.keys(v).some((k) => RESERVED_ENV_KEYS.has(k)),
+      {
+        message: `env_vars cannot override reserved keys: ${[...RESERVED_ENV_KEYS].join(", ")}`,
+      },
+    ),
 });
 export type UpdateAgentBody = z.infer<typeof UpdateAgentBody>;
 
