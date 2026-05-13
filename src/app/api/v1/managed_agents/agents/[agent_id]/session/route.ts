@@ -55,6 +55,7 @@ import {
   claimWarmTask,
   deleteClaimedWarmTask,
   markClaimedTaskDead,
+  topUpWarmPool,
 } from "@/server/warmPool";
 import { wrap } from "@/server/route-helpers";
 import type { Prisma } from "@prisma/client";
@@ -390,6 +391,8 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
   // can't be served from the pool — always go cold.
   const hasEnvVars = body.env_vars && Object.keys(body.env_vars).length > 0;
   const warm = hasEnvVars ? null : await claimWarmTask(agent_id);
+  // Replenish immediately on claim — don't wait for the 60s reconciler tick.
+  if (warm) void topUpWarmPool().catch(() => {});
 
   let session: SessionRow;
   try {
