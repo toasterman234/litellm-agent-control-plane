@@ -10,7 +10,9 @@
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import {
+  encryptEnvVars,
   httpError,
+  RESERVED_ENV_KEYS,
   toApiAgent,
   UpdateAgentBody,
 } from "@/server/types";
@@ -46,6 +48,31 @@ export const PATCH = wrap<RouteContext>(async (req, ctx) => {
 
   const existing = await prisma.agent.findUnique({ where: { agent_id } });
   if (existing === null) httpError(404, `agent '${agent_id}' not found`);
+
+  // env_vars replace flow: user supplies the new user-editable map; we
+  // preserve any reserved-key entries already on the row (e.g.
+  // AGENT_REQUIREMENTS, which is set at create time and not user-editable).
+  if (body.env_vars !== undefined) {
+    const existingRaw =
+      existing &&
+      existing.env_vars &&
+      typeof existing.env_vars === "object" &&
+      !Array.isArray(existing.env_vars)
+        ? (existing.env_vars as Record<string, unknown>)
+        : {};
+    const preserved: Record<string, string> = {};
+    for (const [k, v] of Object.entries(existingRaw)) {
+      if (RESERVED_ENV_KEYS.has(k)) {
+        // Reserved keys are stored encrypted — keep the ciphertext as-is.
+        preserved[k] = String(v);
+      }
+    }
+    const reencrypted = encryptEnvVars(body.env_vars);
+    data.env_vars = {
+      ...preserved,
+      ...reencrypted,
+    } as Prisma.InputJsonValue;
+  }
 
   const updated = await prisma.agent.update({ where: { agent_id }, data });
   return Response.json(toApiAgent(updated));
