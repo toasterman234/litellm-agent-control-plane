@@ -50,7 +50,7 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
   const { agent_id } = await ctx.params;
 
   const agent = await prisma.agent.findUnique({ where: { agent_id } });
-  if (agent === null) httpError(404, `agent '${agent_id}' not found`);
+  if (agent === null || agent.created_by !== user_id) httpError(404, `agent '${agent_id}' not found`);
 
   const body = AttachSkillBody.parse(await req.json());
 
@@ -89,11 +89,11 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
 });
 
 export const DELETE = wrap<RouteContext>(async (req, ctx) => {
-  assertAuth(req);
+  const { user_id } = assertAuth(req);
   const { agent_id } = await ctx.params;
 
   const agent = await prisma.agent.findUnique({ where: { agent_id } });
-  if (agent === null) httpError(404, `agent '${agent_id}' not found`);
+  if (agent === null || agent.created_by !== user_id) httpError(404, `agent '${agent_id}' not found`);
 
   const basePrompt = (agent.prompt ?? "").split(/\n<!-- skill -->\n/)[0].trimEnd();
   const updated = await prisma.agent.update({
