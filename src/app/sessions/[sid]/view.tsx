@@ -45,6 +45,7 @@ import {
 } from "@/lib/api";
 import { AgentAvatar } from "@/components/agent-avatar";
 import { InspectorPanel } from "@/components/inspector-dialog";
+import { InterceptionsPanel } from "./interceptions-panel";
 import {
   SdkStreamPanel,
   useSdkMessageStream,
@@ -892,6 +893,17 @@ function MainPanel({
               }
             />
           ))}
+
+          {/*
+            Vault interceptions panel — collapsed by default. Mirrors the
+            sandbox-stdout panel: only polls when expanded, so quiet
+            sessions don't pay for the round-trip every 3s. Lives at the
+            bottom of the thread so it doesn't get in the way of the
+            conversation but is one click away when debugging tool calls.
+          */}
+          {session && (
+            <InterceptionsPanel sessionId={session.id} />
+          )}
 
           <div ref={messagesEndRef} />
           <div className="h-4" />
