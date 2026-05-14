@@ -55,6 +55,15 @@ function pemDer(pem: string, label: string): ArrayBuffer {
 const caCertPem = await fs.readFile(`${CA_DIR}/tls.crt`, "utf8");
 const caKeyPem = await fs.readFile(`${CA_DIR}/tls.key`, "utf8");
 const caCert = new x509.X509Certificate(caCertPem);
+// WebCrypto only imports PKCS#8. OpenSSL 1.1.x's `openssl req -newkey` emits
+// PKCS#1 (`BEGIN RSA PRIVATE KEY`) by default — refuse with a clear remediation
+// rather than crashing in importKey() with an opaque error.
+if (!caKeyPem.includes("BEGIN PRIVATE KEY")) {
+  throw new Error(
+    `CA key at ${CA_DIR}/tls.key must be PKCS#8 (-----BEGIN PRIVATE KEY-----). ` +
+    `Regenerate with: openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out tls.key`,
+  );
+}
 const caKey = await crypto.subtle.importKey("pkcs8", pemDer(caKeyPem, "PRIVATE KEY"), ALG, true, ["sign"]);
 
 const leafCache = new Map<string, { cert: string; key: string }>();

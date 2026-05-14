@@ -22,7 +22,14 @@ api.github.com
 
 ## Deployment
 
-- Generate a cluster CA once: `openssl req -x509 -newkey rsa:2048 -keyout tls.key -out tls.crt -sha256 -days 3650 -nodes -subj "/CN=vault" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,digitalSignature"`
+- Generate a cluster CA once. Use `genpkey` for the private key — WebCrypto only imports PKCS#8, and OpenSSL 1.1.x's `req -newkey` emits PKCS#1 by default:
+  ```
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out tls.key
+  openssl req -new -x509 -key tls.key -out tls.crt -sha256 -days 3650 \
+    -subj "/CN=vault/O=LiteLLM" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,digitalSignature"
+  ```
 - Store as K8s TLS secret named `vault-ca` (key + cert).
 - Bake the cert into every harness image at build time: `COPY vault/ca.crt /usr/local/share/ca-certificates/vault.crt && update-ca-certificates`.
 - Sidecar mounts the secret at `/etc/vault-ca` and reads it at boot. Private key never leaves the sidecar.
