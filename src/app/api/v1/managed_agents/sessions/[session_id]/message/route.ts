@@ -22,8 +22,6 @@
 
 import { ZodError } from "zod";
 
-import type { Prisma } from "@prisma/client";
-
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import {
@@ -38,10 +36,12 @@ import {
   invalidateSession,
   markSessionSeen,
 } from "@/server/sessionCache";
+import { appendEvents, countEvents } from "@/server/sessionEvents";
 import {
   HttpError,
   httpError,
   SendMessageBody,
+  type HarnessMessage,
   type HarnessMessagePart,
 } from "@/server/types";
 
@@ -84,7 +84,19 @@ function isHardConnectFailure(err: unknown): boolean {
   return false;
 }
 
-async function persistHistorySnapshot(opts: {
+/**
+ * Sync new harness messages into the session_event log. Fetches the full
+ * thread from the harness, compares against the row count we already have
+ * stored, and appends the tail diff. Harness order is stable (insertion
+ * order on the harness's in-memory history) so a prefix-equality assumption
+ * holds: events we've already stored are the first N of what the harness
+ * returns. We just append harness_messages[N:].
+ *
+ * Best-effort: failures are logged and swallowed so a transient harness
+ * blip doesn't break the user-facing reply. The next successful message
+ * will sync everything we missed.
+ */
+async function persistThreadEvents(opts: {
   session_id: string;
   sandbox_url: string;
   harness_session_id: string;
@@ -94,15 +106,13 @@ async function persistHistorySnapshot(opts: {
       sandbox_url: opts.sandbox_url,
       harness_session_id: opts.harness_session_id,
     });
-    await prisma.session.update({
-      where: { session_id: opts.session_id },
-      data: {
-        history: msgs as unknown as Prisma.InputJsonValue,
-      },
-    });
+    const stored = await countEvents(opts.session_id);
+    if (msgs.length <= stored) return;
+    const fresh: HarnessMessage[] = msgs.slice(stored);
+    await appendEvents(opts.session_id, fresh);
   } catch (err) {
     console.warn(
-      `history snapshot failed for session ${opts.session_id}:`,
+      `event log sync failed for session ${opts.session_id}:`,
       err,
     );
   }
@@ -177,11 +187,11 @@ export async function POST(req: Request, ctx: RouteContext) {
 
     markSessionSeen(session_id);
 
-    // Fire-and-forget: snapshot the full opencode thread into Session.history
-    // so a restarted pod can replay it as the next user message's preamble.
-    // Failures are logged and swallowed — never block the user reply on a
-    // history persist.
-    void persistHistorySnapshot({
+    // Fire-and-forget: append every new HarnessMessage from this turn to the
+    // session_event log so a restarted pod can replay it and any browser can
+    // re-render the conversation without the live pod. Failures are logged
+    // and swallowed — never block the user reply on a persist.
+    void persistThreadEvents({
       session_id,
       sandbox_url: cached.sandbox_url,
       harness_session_id: cached.harness_session_id,
