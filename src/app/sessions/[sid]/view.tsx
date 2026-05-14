@@ -26,6 +26,7 @@ import {
   Copy,
   Check,
   Activity,
+  ShieldCheck,
 } from "lucide-react";
 import {
   ApiError,
@@ -45,6 +46,7 @@ import {
 } from "@/lib/api";
 import { AgentAvatar } from "@/components/agent-avatar";
 import { InspectorPanel } from "@/components/inspector-dialog";
+import { VaultPanel } from "@/components/vault-dialog";
 import {
   SdkStreamPanel,
   useSdkMessageStream,
@@ -589,6 +591,10 @@ export default function SessionThreadView() {
   );
 
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  // Vault is a sibling top-level toggle to Inspect. We keep the two open
+  // states independent so they can be shown together (each renders as a
+  // flex-child aside that shrinks the chat column).
+  const [vaultOpen, setVaultOpen] = useState(false);
 
   return (
     <div className="sessions-app flex w-full h-full bg-white text-gray-900 overflow-hidden">
@@ -614,6 +620,13 @@ export default function SessionThreadView() {
         handleRestart={handleRestart}
         inspectorOpen={inspectorOpen}
         setInspectorOpen={setInspectorOpen}
+        vaultOpen={vaultOpen}
+        setVaultOpen={setVaultOpen}
+      />
+      <VaultPanel
+        open={vaultOpen}
+        onClose={() => setVaultOpen(false)}
+        sessionId={sessionId}
       />
       <InspectorPanel
         open={inspectorOpen}
@@ -650,6 +663,8 @@ interface MainPanelProps {
   handleRestart: () => void;
   inspectorOpen: boolean;
   setInspectorOpen: (v: boolean) => void;
+  vaultOpen: boolean;
+  setVaultOpen: (v: boolean) => void;
 }
 
 function MainPanel({
@@ -674,6 +689,8 @@ function MainPanel({
   handleRestart,
   inspectorOpen,
   setInspectorOpen,
+  vaultOpen,
+  setVaultOpen,
 }: MainPanelProps) {
   const sessionShortId = session?.id ? session.id.slice(0, 8) : "—";
   const statusLabel = session?.status ?? "unknown";
@@ -752,6 +769,20 @@ function MainPanel({
           )}
         </div>
         <div className="flex items-center gap-2 text-gray-400">
+          <button
+            type="button"
+            onClick={() => session && setVaultOpen(!vaultOpen)}
+            disabled={!session}
+            title="Vault — credential interception log for this session"
+            className={`inline-flex items-center gap-1.5 text-[12px] border rounded px-2 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              vaultOpen
+                ? "bg-violet-50 border-violet-200 text-violet-700 hover:bg-violet-100"
+                : "border-gray-200 text-gray-600 hover:bg-gray-100"
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Vault</span>
+          </button>
           <button
             type="button"
             onClick={() => session && setInspectorOpen(!inspectorOpen)}
@@ -894,11 +925,11 @@ function MainPanel({
           ))}
 
           {/*
-            Vault interceptions live on the Inspector's Vault tab — see
-            src/components/inspector-dialog.tsx. The chat thread used to
-            host an inline collapsed panel here; we moved it next to the
-            "Inspect" entrypoint so debugging tool calls is one click
-            away without taking up scroll real estate.
+            Vault interceptions live in the top-level Vault side panel —
+            see src/components/vault-dialog.tsx. The chat thread used to
+            host an inline collapsed panel here; we hoisted it out of
+            scroll into a dedicated header button so debugging tool calls
+            is one click away.
           */}
 
           <div ref={messagesEndRef} />
