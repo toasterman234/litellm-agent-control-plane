@@ -176,16 +176,18 @@ async function sweepStaleWarmTasks(now: number): Promise<number> {
     const ageMs = row.ready_at ? now - row.ready_at.getTime() : null;
     if (ageMs === null || ageMs < RECONCILE_NEW_TASK_GRACE_MS) continue;
 
-    let phaseInfo: Awaited<ReturnType<typeof readPodPhase>> | null = null;
+    let phaseInfo: Awaited<ReturnType<typeof readPodPhase>> | undefined;
     try {
       phaseInfo = await readPodPhase(row.task_arn);
     } catch {
-      // Non-404 API error (network failure, auth, etc.) — treat pod as gone.
-      // readPodPhase handles NotFound internally and returns {phase:undefined}.
+      // Non-404 API error (network failure, auth, etc.) — skip rather than
+      // treating pod as gone. A transient error must not drain the warm pool;
+      // the next tick will retry. readPodPhase handles NotFound internally
+      // and returns {phase:undefined} instead of throwing.
+      continue;
     }
 
     const podGone =
-      !phaseInfo ||
       phaseInfo.phase === undefined || // NotFound — readPodPhase returns {phase:undefined} on 404
       phaseInfo.phase === "Failed" ||
       phaseInfo.phase === "Succeeded";
