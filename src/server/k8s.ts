@@ -315,6 +315,11 @@ async function buildContainerEnv(
     NODE_EXTRA_CA_CERTS: "/etc/vault-ca/tls.crt",
     VAULT_ENABLED: "true",
   };
+  // Unconditionally remove LITELLM_API_KEY from the harness env regardless
+  // of precedence. containerEnvPassthrough could reintroduce it via
+  // CONTAINER_ENV_LITELLM_API_KEY, silently defeating the vault-stub guarantee.
+  // The real key is routed through buildVaultEnv as REAL_LITELLM_API_KEY.
+  delete merged["LITELLM_API_KEY"];
   return Object.entries(merged).map(([name, value]) => ({ name, value }));
 }
 
