@@ -51,22 +51,22 @@ function renderBanner() {
   const { blueBold: b, bold, dim } = ansi;
   // Bright-white pixel-art-style face glyphs over a blue body.
   const w = s => `\x1b[1;97m${s}\x1b[0m`;
-  // Small chibi pixel-art sprite (4 lines) above the wordmarks. Centered
-  // over the LITELLM block letters (cols 3-58, center col 30); sprite is
-  // 7 cols wide → 26 leading spaces. No mouth, just two tiny `•` eyes
-  // and four stubby `▀` feet — keeps the kawaii feel of the Claude Code
-  // startup mascot without the "anime stare" the older ◕ ◕ + ‿ version
-  // accidentally hit. Below: ANSI-shaded "LITELLM" block-letter wordmark
-  // + smaller 2-row "AGENT PLATFORM" wordmark in the same bright blue.
-  // Full banner is ~13 lines — only shown on `lap` (wizard) and
-  // `lap login`, not on fast paths like `lap <name>`.
-  const sp = " ".repeat(26);
+  // Side-profile chibi bullet-train sprite (4 lines) above the wordmarks.
+  // Curved nose on the left (▄▀…), single white `•` "eye" on the front
+  // where the driver's windscreen would be, dim `▭` windows along the
+  // body, two pairs of `▀▀` wheels under the chassis. ~22 cols wide,
+  // centered over the 56-col LITELLM band → 19 leading spaces. Below:
+  // ANSI-shaded "LITELLM" block-letter wordmark + smaller 2-row
+  // "AGENT PLATFORM" wordmark in the same bright blue. Full banner is
+  // ~13 lines — only shown on `lap` (wizard) and `lap login`, not on
+  // fast paths like `lap <name>`.
+  const sp = " ".repeat(19);
   const lines = [
     "",
-    `${sp}${b("▄▀▀▀▀▀▄")}`,
-    `${sp}${b("█")} ${w("•")} ${w("•")} ${b("█")}`,
-    `${sp}${b("▀█████▀")}`,
-    `${sp}${b("▀ ▀ ▀ ▀")}`,
+    `${sp}${b("     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄")}`,
+    `${sp}${b("   ▄▀")} ${w("•")} ${dim("▭ ▭ ▭ ▭ ▭")} ${b("█")}`,
+    `${sp}${b("   █████████████████████")}`,
+    `${sp}${b("     ▀▀          ▀▀")}`,
     "",
     `  ${b("██╗     ██╗████████╗███████╗██╗     ██╗     ███╗   ███╗")}`,
     `  ${b("██║     ██║╚══██╔══╝██╔════╝██║     ██║     ████╗ ████║")}`,
