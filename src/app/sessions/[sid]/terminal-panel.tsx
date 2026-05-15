@@ -21,16 +21,21 @@ interface Props {
   // From SessionRow.sandbox_url — populated by the reconciler once the pod is
   // Running and the NodePort is bound. Null while the sandbox is still creating.
   sandboxUrl: string | null;
+  // From SessionRow.tty_token — bearer token required by the harness's /tty
+  // WebSocket. Browsers can't set arbitrary headers on `new WebSocket(...)`,
+  // so the token is appended as `?token=…`.
+  ttyToken: string | null;
 }
 
-// http(s)://host:port  →  ws(s)://host:port/tty
-function deriveTtyUrl(sandboxUrl: string): string {
-  return sandboxUrl.replace(/^http(s?):\/\//i, "ws$1://").replace(/\/+$/, "") + "/tty";
+// http(s)://host:port  →  ws(s)://host:port/tty(?token=…)
+function deriveTtyUrl(sandboxUrl: string, token: string | null): string {
+  const base = sandboxUrl.replace(/^http(s?):\/\//i, "ws$1://").replace(/\/+$/, "") + "/tty";
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 
 type ConnState = "connecting" | "connected" | "closed" | "error";
 
-export function TerminalPanel({ sessionId, harnessId, sandboxUrl }: Props) {
+export function TerminalPanel({ sessionId, harnessId, sandboxUrl, ttyToken }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [state, setState] = useState<ConnState>("connecting");
@@ -73,9 +78,10 @@ export function TerminalPanel({ sessionId, harnessId, sandboxUrl }: Props) {
 
       // Prefer the live sandbox URL once the pod is ready; otherwise fall back
       // to the local-dev override (a standalone harness container).
+      const fallback = process.env.NEXT_PUBLIC_TUI_BRIDGE_URL ?? "ws://localhost:4098/tty";
       const url = sandboxUrl
-        ? deriveTtyUrl(sandboxUrl)
-        : process.env.NEXT_PUBLIC_TUI_BRIDGE_URL ?? "ws://localhost:4098/tty";
+        ? deriveTtyUrl(sandboxUrl, ttyToken)
+        : (ttyToken ? `${fallback}${fallback.includes("?") ? "&" : "?"}token=${encodeURIComponent(ttyToken)}` : fallback);
 
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
@@ -140,7 +146,7 @@ export function TerminalPanel({ sessionId, harnessId, sandboxUrl }: Props) {
         term?.dispose();
       } catch {}
     };
-  }, [sessionId, harnessId, sandboxUrl]);
+  }, [sessionId, harnessId, sandboxUrl, ttyToken]);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col bg-[#0b0c10]">
