@@ -150,8 +150,10 @@ export function TerminalPanel({ sessionId, harnessId, ttyUrl, sandboxUrl, ttyTok
         if (attempts <= MAX_RECONNECT_ATTEMPTS) {
           const delay = Math.min(BASE_RECONNECT_MS * 2 ** (attempts - 1), 30_000);
           const secs = Math.round(delay / 1000);
+          // The server kills the PTY on every WS close (ws.on("close", term.kill())).
+          // Reconnecting opens a brand-new process — not a resume of the old one.
           term?.write(
-            `\r\n\x1b[2m[ws closed — reconnecting in ${secs}s (${attempts}/${MAX_RECONNECT_ATTEMPTS})]\x1b[0m\r\n`,
+            `\r\n\x1b[2m[ws closed — starting fresh session in ${secs}s (${attempts}/${MAX_RECONNECT_ATTEMPTS})]\x1b[0m\r\n`,
           );
           setState("connecting");
           reconnectTimer = setTimeout(connectWs, delay);
@@ -161,8 +163,15 @@ export function TerminalPanel({ sessionId, harnessId, ttyUrl, sandboxUrl, ttyTok
         }
       };
 
-      // onerror always precedes onclose; let onclose drive reconnect logic.
-      ws.onerror = () => {};
+      // onerror always precedes onclose; onclose drives reconnect logic.
+      // Write the error detail into the terminal so users can distinguish a
+      // failed connection from a normal idle-timeout drop.
+      ws.onerror = (e) => {
+        if (disposed) return;
+        term?.write(
+          `\r\n\x1b[2m[ws error — ${(e as ErrorEvent).message ?? "connection failed"}]\x1b[0m\r\n`,
+        );
+      };
     }
 
     (async () => {
