@@ -40,6 +40,9 @@ const BIND_HOST = process.env.BIND_HOST ?? "0.0.0.0";
 // ALB access logs and browser history if used as a URL query parameter.
 const HARNESS_TOKEN = (process.env.HARNESS_AUTH_TOKEN ?? "").trim();
 const CONTAINER_HARNESS_TOKEN = (process.env.CONTAINER_ENV_HARNESS_AUTH_TOKEN ?? "").trim();
+if (!HARNESS_TOKEN && !CONTAINER_HARNESS_TOKEN) {
+  console.warn("[tty-proxy] WARNING: neither HARNESS_AUTH_TOKEN nor CONTAINER_ENV_HARNESS_AUTH_TOKEN is set — all TTY WebSocket connections will be rejected");
+}
 
 function tokenOk(presented) {
   if (!presented) return false;
