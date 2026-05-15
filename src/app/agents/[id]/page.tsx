@@ -210,6 +210,7 @@ export default function AgentDetailPage({ params }: PageProps) {
       setAgent(updated);
       setEditOpen(false);
     } catch (e) {
+      setEditOpen(false);
       setError(e instanceof ApiError ? e.message : (e as Error).message);
     } finally {
       setEditSaving(false);
@@ -224,6 +225,7 @@ export default function AgentDetailPage({ params }: PageProps) {
       await deleteAgent(agent.id);
       router.push("/agents");
     } catch (e) {
+      setDeleteOpen(false);
       setError(e instanceof ApiError ? e.message : (e as Error).message);
       setDeleteInProgress(false);
     }
