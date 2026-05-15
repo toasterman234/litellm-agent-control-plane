@@ -15,14 +15,35 @@ if [ "${VAULT_ENABLED:-}" = "true" ]; then
   if [ ! -s /lap-shared/env ]; then
     echo "[entrypoint] vault not ready after 15s — unsetting proxy, proceeding without stubs" >&2
     unset HTTPS_PROXY HTTP_PROXY NO_PROXY
+    # Also drop the CA-bundle overrides. With vault down, egress goes direct to
+    # public hosts (github.com, pypi.org, …) which present real certs signed by
+    # Mozilla roots. Leaving SSL_CERT_FILE / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE /
+    # GIT_SSL_CAINFO pointing at /etc/vault-ca/tls.crt would make every direct
+    # HTTPS call fail SSL verification (git clone, uv pip install, the phase
+    # report curl). NODE_EXTRA_CA_CERTS supplements (doesn't replace) Node's
+    # built-in bundle, so it's safe to leave set.
+    unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE GIT_SSL_CAINFO
   else
     set -a
     . /lap-shared/env
     set +a
-    # Debian's git uses libcurl-gnutls which doesn't auto-discover the system
-    # trust store reliably. Pin it to the bundle file (vault CA is baked in
-    # at image build time).
-    export GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+    # Build a combined CA bundle (vault CA + system CAs) so every TLS client
+    # can verify BOTH the vault MITM cert (presented for proxied egress) AND
+    # public certs (presented for direct egress to NO_PROXY hosts like
+    # cluster-internal services). The platform also points the replacement-
+    # bundle env vars (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
+    # GIT_SSL_CAINFO) at /etc/vault-ca/tls.crt for older harness images that
+    # don't run this code path; override them here to the combined bundle so
+    # both verification paths work. NODE_EXTRA_CA_CERTS is supplemental
+    # (appends to Node's built-in Mozilla bundle) and is left at the vault
+    # CA path the platform already set.
+    if [ -r /etc/vault-ca/tls.crt ] && [ -r /etc/ssl/certs/ca-certificates.crt ]; then
+      cat /etc/vault-ca/tls.crt /etc/ssl/certs/ca-certificates.crt > /tmp/lap-ca-bundle.crt
+      export SSL_CERT_FILE=/tmp/lap-ca-bundle.crt
+      export REQUESTS_CA_BUNDLE=/tmp/lap-ca-bundle.crt
+      export CURL_CA_BUNDLE=/tmp/lap-ca-bundle.crt
+      export GIT_SSL_CAINFO=/tmp/lap-ca-bundle.crt
+    fi
     echo "[entrypoint] vault stubs sourced ($(wc -l </lap-shared/env) keys)"
   fi
 fi
