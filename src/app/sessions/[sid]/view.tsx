@@ -8,7 +8,7 @@ import React, {
   useState,
 } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -737,6 +737,7 @@ function MainPanel({
   // Diagnose panel — universally available regardless of session state.
   // Slow/misbehaving ready sessions need it as much as stuck/failed ones,
   // so we mount the button on every status.
+  const router = useRouter();
   const [diagnoseOpen, setDiagnoseOpen] = useState<boolean>(false);
   const [sessionDrawerOpen, setSessionDrawerOpen] = useState(false);
 
@@ -749,7 +750,7 @@ function MainPanel({
     setDeletingSession(true);
     try {
       await deleteSession(session.id);
-      window.location.href = "/sessions";
+      router.push("/sessions");
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : (e as Error).message;
       setDeleteSessionError(msg);

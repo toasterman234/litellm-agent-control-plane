@@ -273,7 +273,7 @@ export default function SessionsListPage() {
         </ul>
       )}
 
-      <Dialog open={!!deleteTargetId} onOpenChange={(open) => { if (!open) setDeleteTargetId(null); }}>
+      <Dialog open={!!deleteTargetId} onOpenChange={(open) => { if (!open && !deleting) setDeleteTargetId(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete session</DialogTitle>

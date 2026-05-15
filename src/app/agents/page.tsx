@@ -318,7 +318,7 @@ export default function AgentsListPage() {
         </div>
       )}
 
-      <Dialog open={!!deleteTargetId} onOpenChange={(open) => { if (!open) setDeleteTargetId(null); }}>
+      <Dialog open={!!deleteTargetId} onOpenChange={(open) => { if (!open && !deleting) setDeleteTargetId(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete agent</DialogTitle>

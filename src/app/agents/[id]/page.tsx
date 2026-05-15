@@ -197,9 +197,11 @@ export default function AgentDetailPage({ params }: PageProps) {
       // Re-splice skill blocks after the edited base prompt so attachments survive.
       const SKILL_RE = /(\n<!-- skill(?::[^\s>]+)? -->\n[\s\S]*)/;
       const skillSuffix = (agent.prompt ?? "").match(SKILL_RE)?.[1] ?? "";
+      // When user clears the prompt, send "" explicitly so PATCH's
+      // `if (body.prompt !== undefined)` guard actually fires and persists it.
       const mergedPrompt = editPrompt.trim()
         ? editPrompt.trim() + (skillSuffix || "")
-        : skillSuffix || undefined;
+        : skillSuffix || "";
       const updated = await updateAgent(agent.id, {
         name: editName.trim() || undefined,
         model: editModel.trim() || undefined,
