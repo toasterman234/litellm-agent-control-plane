@@ -1,0 +1,65 @@
+---
+title: "Codex TUI"
+description: "Run the OpenAI Codex CLI inside a managed sandbox and attach to it from your terminal."
+---
+
+The `codex` harness wraps the [OpenAI Codex CLI](https://github.com/openai/codex) (`@openai/codex`) inside a sandboxed pod and exposes it over a WebSocket `/tty` endpoint. The `lap` CLI attaches your local terminal to the remote PTY — same feel as `ssh`.
+
+## Create an agent
+
+In the UI, choose `codex` from the Harness picker on **New Agent**, pick an OpenAI model, and save.
+
+Or via API:
+
+```bash
+curl -X POST $LAP_URL/api/v1/managed_agents/agents \
+  -H "Authorization: Bearer $MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-codex-agent",
+    "harness_id": "codex",
+    "model": "openai/gpt-4o"
+  }'
+```
+
+## Attach to it
+
+```bash
+lap my-codex-agent
+```
+
+You'll see the Codex CLI splash banner, and your local terminal becomes the sandbox's terminal — real `codex` v0.130+, real PTY, real ANSI rendering streamed over a WebSocket. Press **Ctrl-D** to detach.
+
+## How auth works
+
+The harness routes Codex through the LiteLLM gateway by mapping platform env vars at boot:
+
+| LiteLLM env var | Mapped to |
+| --- | --- |
+| `LITELLM_API_BASE` | `OPENAI_BASE_URL` |
+| `LITELLM_API_KEY`  | `OPENAI_API_KEY`  |
+
+So Codex talks to your LiteLLM proxy as if it were OpenAI directly. No need to put a real OpenAI key in the sandbox — your LiteLLM gateway decides which underlying provider gets called.
+
+## Skills
+
+Library skills attached to the agent are materialized into `~/.claude/skills/<slug>/SKILL.md` on session boot — same path as the `claude-code` harness uses. Codex doesn't read that directory natively today, but the files are there for you to `cat` / reference inside the TUI.
+
+## Image override
+
+The harness image resolves from `K8S_HARNESS_IMAGE_CODEX` at session-create time. Update the secret and recreate the agent to pick up a new image:
+
+```bash
+kubectl patch secret litellm-env -p "{\"data\":{
+  \"K8S_HARNESS_IMAGE_CODEX\":\"$(echo -n <image> | base64 | tr -d '\n')\"
+}}"
+kubectl rollout restart deployment/litellm-web deployment/litellm-worker
+```
+
+Existing agents keep their snapshotted image until recreated.
+
+## Next
+
+- Pick a different TUI: [Hermes TUI](/hermes-quickstart)
+- Connect to a session: [lap CLI](/lap-cli)
+- Production setup: [Deploy to AWS](/deploy-aws)

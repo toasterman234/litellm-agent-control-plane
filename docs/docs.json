@@ -31,6 +31,13 @@
             ]
           },
           {
+            "group": "Harnesses",
+            "pages": [
+              "codex-quickstart",
+              "hermes-quickstart"
+            ]
+          },
+          {
             "group": "Deploy",
             "pages": [
               "k8s-backend",

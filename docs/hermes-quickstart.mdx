@@ -1,0 +1,89 @@
+---
+title: "Hermes TUI"
+description: "Run the Nous Research Hermes Agent CLI inside a managed sandbox and attach to it from your terminal."
+---
+
+The `hermes` harness wraps [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) — a self-improving Python CLI with persistent memory, automated skill creation, and 300+ supported models — inside a sandboxed pod exposed over a WebSocket `/tty` endpoint. The default command is `hermes --tui`, the modern Ink-based interactive UI.
+
+The image clones the upstream repo at a pinned release tag (`v2026.5.16`) and installs into a venv at `/opt/hermes` via `uv`.
+
+## Create an agent
+
+In the UI, choose `hermes` from the Harness picker on **New Agent**, pick a model, and save.
+
+Or via API:
+
+```bash
+curl -X POST $LAP_URL/api/v1/managed_agents/agents \
+  -H "Authorization: Bearer $MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-hermes-agent",
+    "harness_id": "hermes",
+    "model": "openai/gpt-4o"
+  }'
+```
+
+Hermes accepts any model via LiteLLM — see the upstream README for the full provider matrix. Inside the TUI you can also `hermes model` to switch on the fly.
+
+## Attach to it
+
+```bash
+lap my-hermes-agent
+```
+
+You'll see the Hermes Agent banner, the available-tools list, and the `❯` prompt. Real `hermes` v0.14+, real PTY, streamed over a WebSocket. Press **Ctrl-D** to detach; remote session stays alive for reconnection.
+
+## How auth works
+
+Hermes uses an OpenAI-compatible API. The harness `server.js` maps platform env vars at boot:
+
+| LiteLLM env var | Mapped to |
+| --- | --- |
+| `LITELLM_API_BASE` | `OPENAI_BASE_URL` |
+| `LITELLM_API_KEY`  | `OPENAI_API_KEY`  |
+
+So Hermes talks to your LiteLLM proxy as if it were OpenAI directly — including for non-OpenAI providers like Anthropic, OpenRouter, Hugging Face, etc.
+
+## Skills
+
+Library skills attached to the agent are materialized into `~/.hermes/skills/<slug>/SKILL.md` on session boot — matching hermes's loader path (different from `claude-code`'s `~/.claude/skills/`). Hermes discovers them natively at startup and can also auto-create new skills mid-session via its self-improvement loop.
+
+## Storage layout
+
+Hermes persists state under `HERMES_HOME` (default `/home/sandbox/.hermes`):
+
+```
+~/.hermes/
+├── skills/        # one dir per skill, each contains SKILL.md
+├── sessions/      # SQLite session store with FTS5 search
+├── memories/      # agent-curated long-term memory
+├── logs/
+└── config.yaml
+```
+
+This lives inside the sandbox pod's writable filesystem. It does **not** survive `lap` reconnecting to a fresh session — each new session gets a fresh `HERMES_HOME`.
+
+## Image override
+
+The harness image resolves from `K8S_HARNESS_IMAGE_HERMES` at session-create time:
+
+```bash
+kubectl patch secret litellm-env -p "{\"data\":{
+  \"K8S_HARNESS_IMAGE_HERMES\":\"$(echo -n <image> | base64 | tr -d '\n')\"
+}}"
+kubectl rollout restart deployment/litellm-web deployment/litellm-worker
+```
+
+Existing agents keep their snapshotted image until recreated.
+
+## Known caveats
+
+- **Image size.** The hermes image is larger than the Node-only harnesses because it pulls a Python 3.11 runtime, `ripgrep`, `uv`, and the hermes-agent repo. First session boot on a cold node can be ~30s while the image pulls.
+- **Voice / browser extras skipped.** The image installs `uv pip install -e .` (no `[all]`) — voice transcription and Playwright/Chromium aren't included to keep the image lean. Add them in a fork if you need them.
+
+## Next
+
+- Pick a different TUI: [Codex TUI](/codex-quickstart)
+- Connect to a session: [lap CLI](/lap-cli)
+- Production setup: [Deploy to AWS](/deploy-aws)
