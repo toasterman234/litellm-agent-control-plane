@@ -302,11 +302,21 @@ async function openAgent(args) {
   }
   process.stdout.write(" \x1b[32mready\x1b[0m\n");
 
-  // Prefer session.tty_url when the platform provides it — that's a
-  // platform-served route (e.g. /api/v1/managed_agents/sessions/<id>/tty
-  // proxied by server-proxy.mjs) that's reachable over the same public
-  // ingress as the rest of the API. Fall back to sandbox_url + /tty for
-  // older platforms / local dev where the sandbox is directly reachable.
+  const resolved = resolveWsTarget(session, cfg);
+  if (!resolved) process.exit(1);
+  console.log(`  \x1b[2m→ attaching local TTY to ${resolved.wsUrl}\x1b[0m`);
+  console.log("  \x1b[2m(press Ctrl-D to detach)\x1b[0m\n");
+
+  await attachPty(resolved.wsUrl, resolved.ttyToken);
+}
+
+// Decide the WebSocket URL + bearer for a given session row, in priority
+// order: platform-served tty_url (preferred — reachable over the same
+// public ingress as the rest of the API), direct sandbox_url+/tty (older
+// platforms / local dev where the sandbox port is exposed), then the
+// LAP_TTY_FALLBACK env override. Returns null after printing an error if
+// nothing usable is available; the caller decides whether to exit.
+function resolveWsTarget(session, cfg) {
   let wsUrl;
   if (session.tty_url) {
     if (/^wss?:\/\//.test(session.tty_url)) {
@@ -314,7 +324,6 @@ async function openAgent(args) {
     } else if (/^https?:\/\//.test(session.tty_url)) {
       wsUrl = session.tty_url.replace(/^http/, "ws");
     } else {
-      // Relative path — prepend the platform base URL, swap to ws/wss.
       const baseWs = cfg.base.replace(/^http/, "ws").replace(/\/+$/, "");
       const suffix = session.tty_url.startsWith("/") ? session.tty_url : `/${session.tty_url}`;
       wsUrl = baseWs + suffix;
@@ -331,19 +340,12 @@ async function openAgent(args) {
       console.error(`  \x1b[31m✗ platform returned neither tty_url nor a reachable sandbox_url.\x1b[0m`);
     }
     console.error(`  \x1b[2m  upgrade the platform, or set LAP_TTY_FALLBACK=ws://host:port/tty in your env\x1b[0m`);
-    process.exit(1);
+    return null;
   }
   // The harness's verifyClient requires the bearer token; the platform
   // returns it via session.tty_token (preferred) or via LAP_TTY_TOKEN env.
-  // We send it as a request header (not a query param) so the token doesn't
-  // end up in ingress / proxy / load-balancer access logs that record the
-  // request line. The harness accepts both forms; we use the header form
-  // from Node where it's available.
   const ttyToken = session.tty_token || process.env.LAP_TTY_TOKEN || "";
-  console.log(`  \x1b[2m→ attaching local TTY to ${wsUrl}\x1b[0m`);
-  console.log("  \x1b[2m(press Ctrl-D to detach)\x1b[0m\n");
-
-  await attachPty(wsUrl, ttyToken);
+  return { wsUrl, ttyToken };
 }
 
 function attachPty(wsUrl, ttyToken) {
