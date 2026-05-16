@@ -23,15 +23,41 @@ if [ -n "${LITELLM_API_KEY:-}" ]; then
 }
 EOF
   chmod 600 "$HOME/.codex/auth.json"
-  # Also trust the workspace and dismiss the model NUX so the TUI lands
-  # straight on the prompt instead of an "approve this directory?" gate.
-  cat > "$HOME/.codex/config.toml" <<EOF
+  # Also trust the workspace, dismiss the model NUX, AND route the model
+  # client through the LiteLLM gateway. Without a [model_providers.litellm]
+  # block, codex's default provider uses an api.openai.com base URL that
+  # IGNORES OPENAI_BASE_URL — every chat then 401s against real OpenAI
+  # using the (rejected) LiteLLM stub key. Defining a provider with
+  # `wire_api = "responses"` plus a custom `base_url` makes codex hit
+  # `<base_url>/responses` instead of OpenAI directly. `env_key =
+  # "OPENAI_API_KEY"` keeps codex reading the vault stub the harness
+  # already sets. Verified end-to-end: codex returns the model response
+  # via LiteLLM (provider=litellm, tokens accounted, no openai.com calls).
+  if [ -n "${LITELLM_API_BASE:-}" ]; then
+    cat > "$HOME/.codex/config.toml" <<EOF
+model_provider = "litellm"
+
+[projects."$REPO_DIR"]
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 1
+
+[model_providers.litellm]
+name = "LiteLLM Gateway"
+base_url = "${LITELLM_API_BASE%/}/v1"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"
+EOF
+  else
+    cat > "$HOME/.codex/config.toml" <<EOF
 [projects."$REPO_DIR"]
 trust_level = "trusted"
 
 [tui.model_availability_nux]
 "gpt-5.5" = 1
 EOF
+  fi
   chmod 600 "$HOME/.codex/config.toml"
 fi
 
