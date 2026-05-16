@@ -81,6 +81,21 @@ const LABEL_WARM_TASK_ID = "litellm-warm-task-id";
 // own selector label avoids that coupling.
 const LABEL_SANDBOX_NAME = "litellm-sandbox-name";
 
+// agent.env_vars keys that are NOT secrets — flags / config / arg lists.
+// These bypass the vault stub mechanism entirely: the platform injects the
+// real value directly into the harness container env, and buildVaultEnv
+// filters them out so vault never sees them. Without this allowlist, vault
+// would replace e.g. CLAUDE_EXTRA_ARGS="--dangerously-skip-permissions"
+// with a stub like `stub_claude_extra_args_a8f1`, and the harness would
+// launch `claude` with that gibberish as argv. Keep this list short and
+// limited to values that are clearly not credentials.
+const NON_SECRET_AGENT_ENV_KEYS = new Set<string>([
+  "CLAUDE_EXTRA_ARGS",
+  "OPENCODE_EXTRA_ARGS",
+  "CODEX_EXTRA_ARGS",
+  "CLAUDE_AGENT_SDK_EXTRA_ARGS",
+]);
+
 // Poll intervals tuned for local kind: pod IP and NodePort assignment
 // usually settle in <500ms once the controller has scheduled the pod, so
 // shorter ticks bound the tail without flooding the apiserver. Same for
@@ -388,14 +403,38 @@ async function buildContainerEnv(
        process.env.CONTAINER_ENV_HARNESS_AUTH_TOKEN ??
        "").trim(),
   };
-  // Precedence (lowest → highest): passthrough → per-session env_vars → required base.
-  // NOTE: agent.env_vars (the long-lived per-agent secrets) are intentionally
-  // OMITTED from the harness env — vault holds the real values and writes
-  // KEY=stub_… into /lap-shared/env, which the harness entrypoint sources.
-  // Per-session env_vars stay direct (short-lived overrides, out of scope
-  // for the stub model).
+  // Pass-through subset of agent.env_vars — the keys in
+  // NON_SECRET_AGENT_ENV_KEYS (e.g. CLAUDE_EXTRA_ARGS) are flags, not
+  // secrets, so the platform injects their decrypted values directly into
+  // the harness env instead of routing through the vault stub mechanism.
+  // The rest of agent.env_vars still goes through vault — see
+  // buildVaultEnv which filters this same set out.
+  const agentEnvRaw =
+    agent.env_vars &&
+    typeof agent.env_vars === "object" &&
+    !Array.isArray(agent.env_vars)
+      ? (agent.env_vars as Record<string, string>)
+      : {};
+  const agentNonSecretEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(agentEnvRaw)) {
+    if (!NON_SECRET_AGENT_ENV_KEYS.has(k)) continue;
+    try {
+      agentNonSecretEnv[k] = decrypt(v);
+    } catch {
+      // Corrupted/wrong-key entry — skip (same behavior as decryptEnvVars
+      // in types.ts). Don't block boot for a single bad row.
+    }
+  }
+
+  // Precedence (lowest → highest):
+  //   passthrough → agent non-secret env → per-session env → required base.
+  // NOTE: secret agent.env_vars (everything NOT in NON_SECRET_AGENT_ENV_KEYS)
+  // are intentionally OMITTED from the harness env here — vault holds the
+  // real values and writes KEY=stub_… into /lap-shared/env, which the
+  // harness entrypoint sources at startup.
   const merged: Record<string, string> = {
     ...env.containerEnvPassthrough,
+    ...agentNonSecretEnv,
     ...(env_vars ?? {}),
     ...base,
     // Route outbound HTTPS through the in-pod vault sidecar so it can swap
@@ -440,12 +479,18 @@ function buildVaultEnv(opts: RunTaskOpts): Array<{ name: string; value: string }
     !Array.isArray(agent.env_vars)
       ? (agent.env_vars as Record<string, string>)
       : {};
-  // Strip LITELLM_API_KEY from agent env_vars before mapping — we push it
-  // explicitly below as the platform key, so including it from agent.env_vars
-  // would produce two REAL_LITELLM_API_KEY entries with non-deterministic
-  // winner behaviour in the vault container spec.
+  // Strip from the agent env_vars before mapping:
+  //   - LITELLM_API_KEY: pushed explicitly below as the platform's real
+  //     key, so a duplicate REAL_LITELLM_API_KEY entry would lose
+  //     non-deterministically in the vault container spec.
+  //   - NON_SECRET_AGENT_ENV_KEYS: these are flags / config (e.g.
+  //     CLAUDE_EXTRA_ARGS="--dangerously-skip-permissions"). They're
+  //     injected directly into the harness env by buildContainerEnv;
+  //     stubbing them via vault would replace the flag value with
+  //     `stub_claude_extra_args_xxx` and the harness would launch
+  //     `claude` with gibberish argv.
   const out: Array<{ name: string; value: string }> = Object.entries(raw)
-    .filter(([k]) => k !== "LITELLM_API_KEY")
+    .filter(([k]) => k !== "LITELLM_API_KEY" && !NON_SECRET_AGENT_ENV_KEYS.has(k))
     .map(([k, v]) => ({ name: `REAL_${k}`, value: decrypt(v) }));
   // MASTER_KEY is the shared secret both sides hash to derive the
   // /interceptions auth token. Without it the platform's queries 401.
