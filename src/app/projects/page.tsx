@@ -188,14 +188,14 @@ export default function ProjectsPage() {
     <div className="mx-auto w-full max-w-5xl px-6 py-8">
       <div className="mb-6 flex items-center justify-between border-b pb-4">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight text-foreground">Templates</h1>
+          <h1 className="text-[22px] font-semibold tracking-tight text-foreground">Projects</h1>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
             Preconfigured sandbox environments for agent creation.
           </p>
         </div>
         <Link href="/projects/new" className={buttonVariants()}>
           <Plus className="size-4" aria-hidden />
-          New Template
+          New Project
         </Link>
       </div>
 
