@@ -267,6 +267,22 @@ jobs:
             {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_GEMINI\",\"value\":\"$GM_B64\"}
           ]"
 
+      # Apply the manifests BEFORE setting the image so env-var additions
+      # (e.g. new K8S_HARNESS_IMAGE_<NAME> entries on the pod spec) reach
+      # the cluster. `kubectl set image` only updates the image field —
+      # any other change to the deployment template that lives only in
+      # k8s/web.yaml (env mappings, volumes, etc.) never lands without
+      # `kubectl apply`. The manifest's `image:` is a `${GIT_SHA}`
+      # placeholder; envsubst expands it to this commit's SHA so the
+      # applied template carries a valid image reference — the same SHA
+      # the explicit `kubectl set image` step below pins again.
+      - name: Apply web + worker manifests
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          envsubst '$GIT_SHA' < k8s/web.yaml    | kubectl apply -n default -f -
+          envsubst '$GIT_SHA' < k8s/worker.yaml | kubectl apply -n default -f -
+
       - name: Update web deployment image
         run: |
           IMAGE="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/litellm-agent-platform:${{ github.sha }}"
