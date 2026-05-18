@@ -22,36 +22,26 @@ Slack @mention / DM
                       └─ chat.postMessage in the same thread
 ```
 
-## One-time Slack app setup
+## One-time Slack setup (via the LAP web UI)
 
-1. **Create the app.** Go to <https://api.slack.com/apps>, click **Create New App → From a manifest**. Pick your workspace, paste the contents of [`manifest.json`](./manifest.json). Replace `REPLACE_WITH_YOUR_HOSTNAME` with whatever hostname your LAP web container is reachable at (for local dev, an `ngrok` URL; for prod, your real domain).
+1. **Set three env vars on the LAP server** and restart it:
+   - `SLACK_CLIENT_ID`
+   - `SLACK_CLIENT_SECRET`
+   - `SLACK_SIGNING_SECRET`
 
-2. **Grab credentials.** Under **Basic Information**:
-   - Copy the **Client ID** → set as `SLACK_CLIENT_ID` in `.env`.
-   - Click **Show** next to **Client Secret** → copy → set as `SLACK_CLIENT_SECRET`.
-   - Click **Show** next to **Signing Secret** → copy → set as `SLACK_SIGNING_SECRET`.
-   Restart the LAP web container so the integration registers (it's gated by `enabled()` checking all three env vars).
+   You'll grab these from <https://api.slack.com/apps> after creating the app in step 3, then come back and set them. The integration is gated by `enabled()` checking all three.
 
-3. **Install the app into your workspace.** Visit:
-   ```
-   https://YOUR_LAP_HOST/api/integrations/oauth/slack/authorize?master_key=$MASTER_KEY
-   ```
-   Slack will redirect to a consent screen → approve → it bounces back to LAP's `oauth/slack/callback`, which creates an `IntegrationInstall` row with the encrypted bot token and the bot's `bot_user_id`.
+2. **Open the agent page** at `/agents/<your-agent-id>` and scroll to the **Channels** section. Click **Set up** next to Slack — a four-step wizard takes over from here.
 
-4. **Bind the install to your OPENCLAW agent.** v1 doesn't yet have a UI toggle for this — write the row directly:
-   ```sql
-   INSERT INTO agent_integration_binding (binding_id, agent_id, install_id, enabled)
-   VALUES (
-     gen_random_uuid(),
-     '<OPENCLAW_AGENT_ID>',
-     (SELECT install_id FROM integration_install
-       WHERE integration_id = 'slack' AND workspace_id = '<YOUR_TEAM_ID>'),
-     true
-   );
-   ```
-   Your `OPENCLAW_AGENT_ID` is whatever you named the Claude Agent SDK agent in the LAP web UI (the path will be `/agents/<that-id>`).
+3. **Wizard step 1 (server check)**: confirms the three env vars are present.
 
-5. **Smoke-test.** In Slack, DM **@OPENCLAW** a question. Within ~30s you should see a reply.
+4. **Wizard step 2 (manifest)**: shows the Slack app manifest with your LAP hostname already substituted into both URLs. Copy it, paste into <https://api.slack.com/apps> → **Create New App → From a manifest**. Submit, then click **Install to Workspace**.
+
+5. **Wizard step 3 (install)**: click **Open OAuth flow**. The dialog polls every two seconds and advances automatically once the install lands.
+
+6. **Wizard step 4 (bind)**: click **Connect to this agent**. Done.
+
+7. **Smoke-test.** In Slack, DM the bot. Within ~30s you should see a reply in-thread.
 
 ## Local development
 
