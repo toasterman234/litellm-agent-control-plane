@@ -39,4 +39,18 @@ if [ -n "${SKILLS_JSON:-}" ]; then
   ' || echo "[entrypoint] WARNING: skill hydration failed; continuing"
 fi
 
+# Optional self-test: when GEMINI_SELFTEST_PROMPT is set, run a one-shot
+# non-interactive gemini call with `-p` so the model reply lands in this
+# container's stdout (and therefore in pod logs / the platform's
+# /sessions/<id>/diagnose endpoint). Lets you prove the harness's
+# credential + routing produce a real model reply WITHOUT needing the WS
+# /tty proxy (useful as a smoke test on a regressed proxy). Non-fatal on
+# failure — TUI flow still starts below.
+if [ -n "${GEMINI_SELFTEST_PROMPT:-}" ]; then
+  echo "[selftest] running: gemini -p ..." >&2
+  echo "[selftest-begin]"
+  gemini -p "$GEMINI_SELFTEST_PROMPT" 2>&1 || echo "[selftest] gemini exited non-zero"
+  echo "[selftest-end]"
+fi
+
 exec node /app/server.js
