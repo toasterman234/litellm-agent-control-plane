@@ -15,10 +15,12 @@
  * code path.
  */
 
+import http from "http";
 import { prisma } from "@/server/db";
 import { env } from "@/server/env";
 import { reconcileOrphans } from "@/server/reconcile";
 import { topUpWarmPool } from "@/server/warmPool";
+import { registry } from "@/server/metrics";
 
 const intervalMs = env.RECONCILE_INTERVAL_SECONDS * 1000;
 
@@ -30,6 +32,10 @@ async function tick() {
 
   try {
     r = await reconcileOrphans();
+    registry.inc("reconcile_failed_creating_total",   {}, r.failed_creating);
+    registry.inc("reconcile_idle_killed_total",        {}, r.idle_killed);
+    registry.inc("reconcile_ghost_killed_total",       {}, r.ghost_killed);
+    registry.inc("reconcile_warm_stale_killed_total",  {}, r.warm_stale_killed);
   } catch (e) {
     k8s_ok = false;
     console.error("reconcile tick failed:", e);
@@ -46,10 +52,13 @@ async function tick() {
     }
   }
 
+  const elapsed = Date.now() - tickStart;
+  registry.observe("reconcile_duration_seconds", {}, elapsed / 1000);
+
   // Heartbeat — emitted every tick so operators can confirm the worker is
   // alive and K8s is reachable without waiting for a non-zero event.
   console.log(
-    `reconcile: ok=${k8s_ok} elapsed_ms=${Date.now() - tickStart}` +
+    `reconcile: ok=${k8s_ok} elapsed_ms=${elapsed}` +
     ` inspected=${r.inspected} stopped=${r.stopped}` +
     ` failed_creating=${r.failed_creating} idle_killed=${r.idle_killed}` +
     ` ghost_killed=${r.ghost_killed} warm_stale_killed=${r.warm_stale_killed}` +
@@ -74,6 +83,17 @@ if (env.WARM_POOL_SIZE > 0) {
     if (count > 0) console.log(`startup: cleared ${count} stuck provisioning warm task(s)`);
   }).catch(() => {});
 }
+
+// Prometheus scrape endpoint — no auth, internal cluster traffic only.
+http.createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/metrics") {
+    res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
+    res.end(registry.renderText());
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+}).listen(9091);
 
 setInterval(tick, intervalMs);
 tick();

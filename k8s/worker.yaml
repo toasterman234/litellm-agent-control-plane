@@ -41,6 +41,10 @@ spec:
           args:
             - "npm run worker"
 
+          ports:
+            - containerPort: 9091
+              name: metrics
+
           # ── Secrets (from litellm-env Secret) ──────────────────────────
           env:
             - name: MASTER_KEY

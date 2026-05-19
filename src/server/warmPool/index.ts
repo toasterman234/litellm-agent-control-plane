@@ -23,6 +23,7 @@ import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/server/db";
 import { env } from "@/server/env";
+import { registry } from "@/server/metrics";
 import {
   runTask,
   stopTask,
@@ -130,6 +131,7 @@ export async function provisionWarmTask(agent: AgentRow): Promise<void> {
     data: { agent_id: agent.agent_id, status: "provisioning" },
   });
 
+  const start = Date.now();
   try {
     const { task_arn } = await runTask({
       agent,
@@ -147,7 +149,11 @@ export async function provisionWarmTask(agent: AgentRow): Promise<void> {
       where: { warm_task_id: row.warm_task_id },
       data: { status: "warm", sandbox_url, ready_at: new Date() },
     });
+
+    registry.observe("warm_pool_provision_duration_seconds", {}, (Date.now() - start) / 1000);
+    registry.inc("warm_pool_provision_total", { result: "success" });
   } catch (e) {
+    registry.inc("warm_pool_provision_total", { result: "failed" });
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(
       `warmPool: provision failed warm_task_id=${row.warm_task_id} agent_id=${agent.agent_id}: ${reason}`,

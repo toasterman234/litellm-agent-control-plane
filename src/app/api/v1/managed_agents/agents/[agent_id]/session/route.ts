@@ -58,6 +58,7 @@ import {
 } from "@/server/warmPool";
 import { safeStopTask } from "@/server/reconcile";
 import { wrap } from "@/server/route-helpers";
+import { registry } from "@/server/metrics";
 import type { Prisma } from "@prisma/client";
 
 export const runtime = "nodejs";
@@ -83,6 +84,20 @@ interface BringUpBody {
   title?: string;
   env_vars?: Record<string, string>;
   initial_attachments?: InitialAttachment[];
+}
+
+// ---------------------------------------------------------------------------
+// Maps a spawn error to a short Prometheus label value for session_spawn_failure_total.
+// ---------------------------------------------------------------------------
+
+function classifySpawnError(e: unknown): string {
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  if (msg.includes("cni") || msg.includes("ip exhaustion")) return "cni_exhaustion";
+  if (msg.includes("never reached running")) return "pod_timeout";
+  if (msg.includes("never ready at")) return "harness_timeout";
+  if (msg.includes("pod") && msg.includes("failed")) return "pod_failed";
+  if (msg.includes("imagepull") || msg.includes("image pull")) return "image_pull";
+  return "unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -204,27 +219,42 @@ async function coldBringUp(
   session_id: string,
   body: BringUpBody,
 ): Promise<BringUpResult> {
-  await setPhase(session_id, "creating_sandbox");
-  const { task_arn } = await runTask({
-    agent,
-    session_id,
-    env_vars: body.env_vars,
-  });
-  await prisma.session.update({
-    where: { session_id },
-    data: { task_arn },
-  });
-  await setPhase(session_id, "pod_pending");
-  const sandbox_url = await waitRunningGetUrl(task_arn, agent);
-  await setPhase(session_id, "pod_running");
-  const rawSandboxFiles = (agent as Record<string, unknown>).sandbox_files;
-  const sandboxFiles = Array.isArray(rawSandboxFiles)
-    ? (rawSandboxFiles as import("@/server/types").SandboxFileSpec[])
-    : [];
-  await setPhase(session_id, "waiting_harness");
-  await waitHttpReady(sandbox_url);
-  await setPhase(session_id, "harness_ready");
-  return finishBringUp(agent, session_id, body, sandbox_url, sandboxFiles);
+  const spawnStart = Date.now();
+  try {
+    let t = Date.now();
+    await setPhase(session_id, "creating_sandbox");
+    const { task_arn } = await runTask({ agent, session_id, env_vars: body.env_vars });
+    registry.observe("session_phase_duration_seconds", { phase: "creating_sandbox" }, (Date.now() - t) / 1000);
+
+    await prisma.session.update({ where: { session_id }, data: { task_arn } });
+
+    t = Date.now();
+    await setPhase(session_id, "pod_pending");
+    const sandbox_url = await waitRunningGetUrl(task_arn, agent);
+    registry.observe("session_phase_duration_seconds", { phase: "pod_pending" }, (Date.now() - t) / 1000);
+
+    await setPhase(session_id, "pod_running");
+    const rawSandboxFiles = (agent as Record<string, unknown>).sandbox_files;
+    const sandboxFiles = Array.isArray(rawSandboxFiles)
+      ? (rawSandboxFiles as import("@/server/types").SandboxFileSpec[])
+      : [];
+
+    t = Date.now();
+    await setPhase(session_id, "waiting_harness");
+    await waitHttpReady(sandbox_url);
+    registry.observe("session_phase_duration_seconds", { phase: "waiting_harness" }, (Date.now() - t) / 1000);
+
+    await setPhase(session_id, "harness_ready");
+    const result = await finishBringUp(agent, session_id, body, sandbox_url, sandboxFiles);
+
+    registry.observe("session_spawn_duration_seconds", { path: "cold" }, (Date.now() - spawnStart) / 1000);
+    registry.inc("session_spawn_total", { path: "cold", result: "success" });
+    return result;
+  } catch (e) {
+    registry.inc("session_spawn_total", { path: "cold", result: "failed" });
+    registry.inc("session_spawn_failure_total", { path: "cold", reason: classifySpawnError(e) });
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -237,28 +267,32 @@ async function warmBringUp(
   body: BringUpBody,
   warm: WarmTaskRow,
 ): Promise<BringUpResult> {
-  if (!warm.task_arn || !warm.sandbox_url) {
-    // claim should have rejected rows in this state, but guard anyway —
-    // we never want to write a Session row pointing at empty fields.
-    throw new Error(
-      `claimed warm task ${warm.warm_task_id} missing task_arn or sandbox_url`,
-    );
+  const spawnStart = Date.now();
+  try {
+    if (!warm.task_arn || !warm.sandbox_url) {
+      throw new Error(
+        `claimed warm task ${warm.warm_task_id} missing task_arn or sandbox_url`,
+      );
+    }
+    await prisma.session.update({
+      where: { session_id },
+      data: { task_arn: warm.task_arn },
+    });
+    const rawWarmFiles = (agent as Record<string, unknown>).sandbox_files;
+    const warmFiles = Array.isArray(rawWarmFiles)
+      ? (rawWarmFiles as import("@/server/types").SandboxFileSpec[])
+      : [];
+    await setPhase(session_id, "harness_ready");
+    const result = await finishBringUp(agent, session_id, body, warm.sandbox_url, warmFiles);
+
+    registry.observe("session_spawn_duration_seconds", { path: "warm" }, (Date.now() - spawnStart) / 1000);
+    registry.inc("session_spawn_total", { path: "warm", result: "success" });
+    return result;
+  } catch (e) {
+    registry.inc("session_spawn_total", { path: "warm", result: "failed" });
+    registry.inc("session_spawn_failure_total", { path: "warm", reason: classifySpawnError(e) });
+    throw e;
   }
-  // Persist the inherited task_arn immediately so reconcile attribution
-  // works even if the harness call below fails.
-  await prisma.session.update({
-    where: { session_id },
-    data: { task_arn: warm.task_arn },
-  });
-  // Warm path skips creating_sandbox / pod_pending / pod_running /
-  // waiting_harness — the pod is already up and the harness is already
-  // listening. Files are injected via the harnessCreateSession body below.
-  const rawWarmFiles = (agent as Record<string, unknown>).sandbox_files;
-  const warmFiles = Array.isArray(rawWarmFiles)
-    ? (rawWarmFiles as import("@/server/types").SandboxFileSpec[])
-    : [];
-  await setPhase(session_id, "harness_ready");
-  return finishBringUp(agent, session_id, body, warm.sandbox_url, warmFiles);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,12 +314,14 @@ async function finishBringUp(
   // When the harness *does* report, those writes happen earlier and this
   // line is effectively a no-op overwrite with the same value.
   await setPhase(session_id, "cloning_repo");
+  const cloneStart = Date.now();
   const harness_session_id = await harnessCreateSession({
     sandbox_url,
     title: body.title,
     prompt: agent.prompt ?? undefined,
     files: files.length > 0 ? files : undefined,
   });
+  registry.observe("session_phase_duration_seconds", { phase: "cloning_repo" }, (Date.now() - cloneStart) / 1000);
   // Flip status=ready as soon as the harness handshake completes. The
   // sandbox is fully usable at this point — the initial_prompt (if any) is
   // the agent doing its job, not part of bring-up, and it can take minutes.
@@ -423,6 +459,11 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
   const warm = hasEnvVars ? null : await claimWarmTask(agent_id);
   // Replenish immediately on claim — don't wait for the 60s reconciler tick.
   if (warm) void topUpWarmPool().catch(() => {});
+  // Track warm pool hit/miss only when pool was actually consulted.
+  if (!hasEnvVars) {
+    if (warm) registry.inc("warm_pool_hit_total");
+    else registry.inc("warm_pool_miss_total");
+  }
 
   let session: SessionRow;
   try {
