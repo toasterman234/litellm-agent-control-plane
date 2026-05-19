@@ -162,11 +162,13 @@ function forwardToNext(clientSocket, initialBuf) {
 }
 
 async function handleTtyUpgrade(clientSocket, buf, sessionId, token) {
+  console.log(`[tty-proxy] request session=${sessionId} token_present=${!!token}`);
+
   if (!tokenOk(token)) {
-    console.warn(`[tty-proxy] 401 session=${sessionId} presented=${token.slice(0,8)}… HARNESS_TOKEN_SET=${!!HARNESS_TOKEN} CONTAINER_TOKEN_SET=${!!CONTAINER_HARNESS_TOKEN}`);
+    console.warn(`[tty-proxy] 401 session=${sessionId} presented=${token ? token.slice(0,8) + "…" : "(empty)"} HARNESS_TOKEN_SET=${!!HARNESS_TOKEN} CONTAINER_TOKEN_SET=${!!CONTAINER_HARNESS_TOKEN}`);
     try {
       clientSocket.write(
-        "HTTP/1.1 418 I'm a teapot\r\nContent-Length: 0\r\nX-Source: tty-proxy\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
       );
       clientSocket.destroy();
     } catch {}
@@ -177,7 +179,7 @@ async function handleTtyUpgrade(clientSocket, buf, sessionId, token) {
   try {
     sandboxUrl = await getSandboxUrl(sessionId);
   } catch (e) {
-    console.error("[tty-proxy] DB lookup failed:", e.message);
+    console.error(`[tty-proxy] 503 session=${sessionId} reason=db_error error=${e.message}`);
     try {
       clientSocket.write(
         "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -188,6 +190,7 @@ async function handleTtyUpgrade(clientSocket, buf, sessionId, token) {
   }
 
   if (!sandboxUrl) {
+    console.warn(`[tty-proxy] 503 session=${sessionId} reason=no_sandbox_url (session not ready or missing)`);
     try {
       clientSocket.write(
         "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -201,7 +204,7 @@ async function handleTtyUpgrade(clientSocket, buf, sessionId, token) {
   try {
     parsed = new URL(sandboxUrl);
   } catch {
-    console.error("[tty-proxy] bad sandbox_url:", sandboxUrl);
+    console.error(`[tty-proxy] 500 session=${sessionId} reason=bad_sandbox_url sandbox_url=${sandboxUrl}`);
     try { clientSocket.destroy(); } catch {}
     return;
   }
@@ -226,16 +229,38 @@ async function handleTtyUpgrade(clientSocket, buf, sessionId, token) {
     "latin1",
   );
 
+  console.log(`[tty-proxy] connecting session=${sessionId} target=${host}:${port}`);
+
   const target = connect(port, host);
   target.once("connect", () => {
+    // Peek at the harness response to catch non-101 rejections before piping.
+    let peeked = false;
+    const onFirstData = (chunk) => {
+      if (peeked) return;
+      peeked = true;
+      const firstLine = chunk.toString("latin1").split("\r\n")[0] ?? "";
+      if (firstLine.includes("101")) {
+        console.log(`[tty-proxy] upgraded session=${sessionId} target=${host}:${port} response="${firstLine}"`);
+      } else {
+        console.warn(`[tty-proxy] upgrade_rejected session=${sessionId} target=${host}:${port} response="${firstLine}"`);
+      }
+    };
+    target.once("data", onFirstData);
+
     target.write(forwardBuf);
     clientSocket.pipe(target);
     target.pipe(clientSocket);
-    clientSocket.on("error", () => { try { target.destroy(); } catch {} });
-    target.on("error", () => { try { clientSocket.destroy(); } catch {} });
+    clientSocket.on("error", (e) => {
+      console.error(`[tty-proxy] client socket error session=${sessionId}:`, e.message);
+      try { target.destroy(); } catch {}
+    });
+    target.on("error", (e) => {
+      console.error(`[tty-proxy] sandbox socket error session=${sessionId} target=${host}:${port}:`, e.message);
+      try { clientSocket.destroy(); } catch {}
+    });
   });
   target.once("error", (e) => {
-    console.error(`[tty-proxy] sandbox connect error (${host}:${port}):`, e.message);
+    console.error(`[tty-proxy] sandbox connect error session=${sessionId} target=${host}:${port}: ${e.message}`);
     try { clientSocket.destroy(); } catch {}
   });
 }
