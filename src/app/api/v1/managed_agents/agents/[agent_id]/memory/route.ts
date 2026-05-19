@@ -17,7 +17,7 @@
  * pre-loaded AGENT_PROMPT picks up the new memory on next launch.
  */
 
-import { assertAuth } from "@/server/auth";
+import { assertAgentTokenOrMaster } from "@/server/auth";
 import { prisma } from "@/server/db";
 import {
   CreateMemoryBody,
@@ -35,8 +35,8 @@ interface RouteContext {
 }
 
 export const GET = wrap<RouteContext>(async (req, ctx) => {
-  assertAuth(req);
   const { agent_id } = await ctx.params;
+  assertAgentTokenOrMaster(req, { scope: "memory", agent_id });
   const exists = await prisma.agent.findUnique({
     where: { agent_id },
     select: { agent_id: true },
@@ -51,8 +51,8 @@ export const GET = wrap<RouteContext>(async (req, ctx) => {
 });
 
 export const POST = wrap<RouteContext>(async (req, ctx) => {
-  assertAuth(req);
   const { agent_id } = await ctx.params;
+  assertAgentTokenOrMaster(req, { scope: "memory", agent_id });
   const exists = await prisma.agent.findUnique({
     where: { agent_id },
     select: { agent_id: true },
@@ -66,6 +66,7 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
     tags: body.tags,
     type: body.type,
     priority: body.priority,
+    pinned: body.pinned,
     source: body.source ?? "ui",
     source_user_id: body.source_user_id ?? null,
     source_session_id: body.source_session_id ?? null,

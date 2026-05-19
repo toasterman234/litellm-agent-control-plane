@@ -14,13 +14,20 @@
  *
  * Env contract (read at tool-call time, not at module load):
  *
- *   LAP_BASE_URL     base URL of the platform (e.g. https://lap.example.com)
- *   AGENT_ID         which agent's memory we operate on
- *   LAP_AUTH_TOKEN   bearer token for /api/v1/managed_agents/*
+ *   LAP_BASE_URL       base URL of the platform (e.g. https://lap.example.com)
+ *   AGENT_ID           which agent's memory we operate on
+ *   LAP_ACCESS_TOKEN   short-lived (~15min) bearer for /api/v1/managed_agents/*
+ *   LAP_REFRESH_TOKEN  long-lived (~pod lifetime) — used only when the
+ *                      access token returns 401, swapped at /agent-auth/refresh
  *
- * If any are missing, `memoryEnv()` returns null and the adapter is
- * expected to skip registering the tools — harness boots cleanly without
- * memory, the LLM simply doesn't see those tool names.
+ * Both tokens arrive in env as vault stubs (`stub_…`). The vault sidecar
+ * swaps them for the real values at egress. After a refresh round-trip,
+ * the fresh access token is a real value held in this module's in-process
+ * cache — the agent (model) never sees either form.
+ *
+ * If any of the four env vars are missing, `memoryEnv()` returns null and
+ * the adapter is expected to skip registering the tools — harness boots
+ * cleanly without memory, the LLM simply doesn't see those tool names.
  */
 
 import { z } from "zod";
@@ -32,7 +39,12 @@ import { z } from "zod";
 export interface MemoryEnv {
   base_url: string;
   agent_id: string;
-  auth_token: string;
+  /** Initial bearer at module load — vault stub at first, swapped to a real,
+   *  freshly-minted access token after the first refresh-on-401. */
+  access_token: string;
+  /** Long-lived bearer for /agent-auth/refresh. Vault stub in env; swapped
+   *  on the wire to its real value when sent in the refresh body. */
+  refresh_token: string;
 }
 
 export interface MemoryEnvStatus {
@@ -45,13 +57,25 @@ export interface MemoryEnvStatus {
 export function memoryEnvStatus(): MemoryEnvStatus {
   const base_url = (process.env.LAP_BASE_URL ?? "").replace(/\/+$/, "");
   const agent_id = process.env.AGENT_ID ?? "";
-  const auth_token = process.env.LAP_AUTH_TOKEN ?? "";
+  // Backward-compat with old pods that still have only LAP_AUTH_TOKEN set:
+  // treat it as the access token and run without refresh. New pods get
+  // both LAP_ACCESS_TOKEN and LAP_REFRESH_TOKEN.
+  const access_token =
+    process.env.LAP_ACCESS_TOKEN ?? process.env.LAP_AUTH_TOKEN ?? "";
+  // Refresh token is OPTIONAL — its absence only means the harness can't
+  // recover from an access-token 401 (degraded mode). We don't add it to
+  // `missing` because the tools still register and work for the access
+  // token's lifetime. The refresh-on-401 path no-ops cleanly if absent.
+  const refresh_token = process.env.LAP_REFRESH_TOKEN ?? "";
   const missing: string[] = [];
   if (!base_url) missing.push("LAP_BASE_URL");
   if (!agent_id) missing.push("AGENT_ID");
-  if (!auth_token) missing.push("LAP_AUTH_TOKEN");
+  if (!access_token) missing.push("LAP_ACCESS_TOKEN");
   if (missing.length > 0) return { env: null, missing };
-  return { env: { base_url, agent_id, auth_token }, missing: [] };
+  return {
+    env: { base_url, agent_id, access_token, refresh_token },
+    missing: [],
+  };
 }
 
 // Warn-once guard so repeated harness calls don't spam logs. Set per-process;
@@ -105,6 +129,12 @@ export const saveMemorySchema = {
     .max(5)
     .optional()
     .describe("Higher = surfaces first in pre-load and search. Default 0."),
+  pinned: z
+    .boolean()
+    .optional()
+    .describe(
+      "Always-on: when true, this memory is unconditionally included in the AGENT_PROMPT pre-load on every future session, independent of the priority/usage ranking. Use sparingly — reserve for rules the agent absolutely cannot afford to miss (security constraints, hard requirements the user emphasized with 'always' / 'never'). Defaults to false.",
+    ),
 } as const;
 
 export const searchMemorySchema = {
@@ -127,6 +157,7 @@ export type SaveMemoryInput = {
   tags?: string[];
   type?: "convention" | "constraint" | "reference" | "preference";
   priority?: number;
+  pinned?: boolean;
 };
 
 export type SearchMemoryInput = {
@@ -177,6 +208,7 @@ export async function callSaveMemory(
     tags: input.tags ?? [],
     type: input.type,
     priority: input.priority,
+    pinned: input.pinned,
     source: "agent",
     source_session_id: extra.source_session_id,
   });
@@ -230,17 +262,58 @@ function memoryUrl(
   return qs && qs.toString() ? `${base}?${qs.toString()}` : base;
 }
 
+// ---------------------------------------------------------------------------
+// HTTP client with refresh-on-401 retry.
+//
+// Why a module-local cache rather than an env-var-only read each time: after
+// the first refresh, the access token we use is a real value (the refresh
+// endpoint returns it in plaintext over the now-trusted TLS channel). The
+// vault sidecar's "swap stubs on egress" trick only works for stubs that
+// were minted at pod start. So we hold the post-refresh token in memory
+// and bypass env for subsequent calls.
+//
+// Single retry only — if even the refreshed token gets 401, something is
+// wrong server-side and the agent should see an error, not loop forever.
+// ---------------------------------------------------------------------------
+
+let cachedAccessToken: string | null = null;
+
+function currentBearer(env: MemoryEnv): string {
+  return cachedAccessToken ?? env.access_token;
+}
+
 async function callApi(
   env: MemoryEnv,
   method: "GET" | "POST",
   url: string,
   body?: unknown,
 ): Promise<{ ok: boolean; status: number; data: unknown; error?: string }> {
+  const firstAttempt = await rawCall(env, method, url, body, currentBearer(env));
+  if (firstAttempt.status !== 401 || !env.refresh_token) {
+    return firstAttempt;
+  }
+
+  // 401 path: try to refresh once, retry once.
+  const refreshed = await refreshAccessToken(env);
+  if (!refreshed) {
+    return firstAttempt; // surface the original 401 to the agent
+  }
+  cachedAccessToken = refreshed;
+  return rawCall(env, method, url, body, refreshed);
+}
+
+async function rawCall(
+  env: MemoryEnv,
+  method: "GET" | "POST",
+  url: string,
+  body: unknown,
+  bearer: string,
+): Promise<{ ok: boolean; status: number; data: unknown; error?: string }> {
   try {
     const res = await fetch(url, {
       method,
       headers: {
-        Authorization: `Bearer ${env.auth_token}`,
+        Authorization: `Bearer ${bearer}`,
         ...(body !== undefined && { "Content-Type": "application/json" }),
       },
       ...(body !== undefined && { body: JSON.stringify(body) }),
@@ -255,6 +328,23 @@ async function callApi(
       data: null,
       error: e instanceof Error ? e.message : String(e),
     };
+  }
+}
+
+async function refreshAccessToken(env: MemoryEnv): Promise<string | null> {
+  try {
+    const res = await fetch(`${env.base_url}/api/v1/agent-auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: env.refresh_token }),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { access_token?: string };
+    return typeof json.access_token === "string" && json.access_token.length > 0
+      ? json.access_token
+      : null;
+  } catch {
+    return null;
   }
 }
 

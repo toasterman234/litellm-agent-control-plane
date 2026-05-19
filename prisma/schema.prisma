@@ -30,6 +30,18 @@ model Agent {
   sandbox_files       Json     @default("[]")
   task_definition_arn String
   container_port      Int      @default(4096)
+  /**
+   * How many memories get pre-loaded into AGENT_PROMPT for this agent at
+   * warm-task / cold-task launch. Pinned rows (Memory.pinned = true) are
+   * always included on top of this limit, capped server-side by
+   * MAX_PINNED_PRELOAD. 0 disables non-pinned preload entirely (only
+   * always-on rows show up in the prompt).
+   *
+   * Surfaced in the UI on /agents/:id/memory as a number input so a user
+   * can tune per-agent — agents that work in a high-rule domain (e.g.
+   * compliance) may want a larger preload window than the default 10.
+   */
+  preload_memory_limit Int     @default(10)
   created_at          DateTime @default(now())
   created_by          String?
 
@@ -129,6 +141,14 @@ model Memory {
 
   priority          Int      @default(0)           // higher = listed first in prompt + UI
   disabled          Boolean  @default(false)       // soft-hide from prompt and search
+  // When true, this row is unconditionally included in the AGENT_PROMPT
+  // pre-load — independent of the priority+usage ranking dial. Distinct
+  // from priority: priority is a tie-breaker for the bounded preload
+  // window, pinned bypasses that ranking. Capped server-side at
+  // MAX_PINNED_PRELOAD (see src/server/memory.ts) so the prompt can't be
+  // blown up by marking everything pinned. UI surfaces this as the
+  // "📌 Always on" toggle on the per-agent memory page.
+  pinned            Boolean  @default(false)
 
   times_applied     Int      @default(0)           // bumped each time search_memory returns this row
   last_applied_at   DateTime?
@@ -144,7 +164,10 @@ model Memory {
   agent Agent @relation(fields: [agent_id], references: [agent_id], onDelete: Cascade)
 
   // Primary read path: active memories for an agent, ordered by priority.
+  // Pinned column added so the preload query can use a partial index on
+  // pinned rows without rebuilding this composite.
   @@index([agent_id, disabled, priority])
+  @@index([agent_id, pinned], map: "Memory_agent_pinned_idx")
   @@map("managed_agent_memory")
 }
 

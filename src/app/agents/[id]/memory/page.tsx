@@ -11,7 +11,7 @@
 
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, Pin, PinOff, Plus, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,8 +32,20 @@ import {
   deleteMemory,
   getAgent,
   listMemory,
+  updateAgent,
   updateMemory,
 } from "@/lib/api";
+
+// Mirrors src/server/memory.ts MAX_PINNED_PRELOAD. Surfaced here so the UI
+// can warn the user when they're pinning past the cap — past this count,
+// excess pinned rows fall back to the regular ranked path.
+const MAX_PINNED_PRELOAD = 20;
+
+// Matches the upper bound on UpdateAgentBody.preload_memory_limit in
+// src/server/types.ts. Keeping it inline avoids dragging server types
+// into the client bundle just for one number.
+const PRELOAD_LIMIT_MAX = 50;
+const PRELOAD_LIMIT_DEFAULT = 10;
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -74,7 +86,20 @@ export default function MemoryPage({ params }: PageProps) {
   const [draftTags, setDraftTags] = useState("");
   const [draftType, setDraftType] = useState("convention");
   const [draftPriority, setDraftPriority] = useState(0);
+  const [draftPinned, setDraftPinned] = useState(false);
   const [adding, setAdding] = useState(false);
+
+  // Preload-limit number input is uncontrolled-by-string so the user can
+  // type intermediate states (e.g. clear the field to retype). On blur or
+  // Enter we coerce to a clamped integer and PATCH the agent. Keeping
+  // `null` as "in-flight edit" lets us distinguish from a synced 0.
+  const [preloadDraft, setPreloadDraft] = useState<string | null>(null);
+  const [savingPreload, setSavingPreload] = useState(false);
+
+  const pinnedCount = useMemo(
+    () => rows.reduce((n, r) => n + (r.pinned && !r.disabled ? 1 : 0), 0),
+    [rows],
+  );
 
   const load = useCallback(async () => {
     setErr(null);
@@ -132,11 +157,13 @@ export default function MemoryPage({ params }: PageProps) {
         tags,
         type: draftType,
         priority: draftPriority,
+        pinned: draftPinned,
       });
       setRows((prev) => [created, ...prev]);
       setDraftText("");
       setDraftTags("");
       setDraftPriority(0);
+      setDraftPinned(false);
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : String(e);
       setErr(msg);
@@ -157,6 +184,33 @@ export default function MemoryPage({ params }: PageProps) {
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : String(e);
       setErr(msg);
+    }
+  }
+
+  async function commitPreload() {
+    if (preloadDraft === null) return;
+    const parsed = parseInt(preloadDraft, 10);
+    const current = agent?.preload_memory_limit ?? PRELOAD_LIMIT_DEFAULT;
+    if (!Number.isFinite(parsed)) {
+      // User cleared the field or typed garbage — snap back without writing.
+      setPreloadDraft(null);
+      return;
+    }
+    const clamped = Math.min(Math.max(parsed, 0), PRELOAD_LIMIT_MAX);
+    if (clamped === current) {
+      setPreloadDraft(null);
+      return;
+    }
+    setSavingPreload(true);
+    try {
+      const updated = await updateAgent(id, { preload_memory_limit: clamped });
+      setAgent(updated);
+      setPreloadDraft(null);
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : String(e);
+      setErr(msg);
+    } finally {
+      setSavingPreload(false);
     }
   }
 
@@ -186,10 +240,43 @@ export default function MemoryPage({ params }: PageProps) {
           Memory{agent?.name ? ` · ${agent.name}` : ""}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {counts.active} active, {counts.disabled} disabled. Top entries are
-          pre-loaded into every new session's system prompt; the agent also
-          searches this list before finalizing a PR.
+          {counts.active} active, {counts.disabled} disabled · {pinnedCount}{" "}
+          📌 always-on. Top entries are pre-loaded into every new session&apos;s
+          system prompt; the agent also searches this list before finalizing
+          a PR.
         </p>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+          <span className="text-muted-foreground">Max preloaded (non-pinned):</span>
+          <Input
+            type="number"
+            min={0}
+            max={PRELOAD_LIMIT_MAX}
+            value={
+              preloadDraft ??
+              String(agent?.preload_memory_limit ?? PRELOAD_LIMIT_DEFAULT)
+            }
+            onChange={(e) => setPreloadDraft(e.target.value)}
+            onBlur={() => void commitPreload()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
+              } else if (e.key === "Escape") {
+                setPreloadDraft(null);
+                e.currentTarget.blur();
+              }
+            }}
+            disabled={savingPreload || !agent}
+            className="h-7 w-20 text-xs"
+          />
+          {savingPreload && (
+            <Loader2 className="size-3 animate-spin text-muted-foreground" />
+          )}
+          <span className="text-muted-foreground">
+            Pinned rows are included on top of this (capped at{" "}
+            {MAX_PINNED_PRELOAD}).
+          </span>
+        </div>
       </header>
 
       {err && (
@@ -244,6 +331,25 @@ export default function MemoryPage({ params }: PageProps) {
               <SelectItem value="3">priority 3</SelectItem>
             </SelectContent>
           </Select>
+          <Button
+            type="button"
+            variant={draftPinned ? "default" : "outline"}
+            size="sm"
+            onClick={() => setDraftPinned((p) => !p)}
+            title={
+              draftPinned
+                ? "Unpin: rank with priority"
+                : "Pin: always-on (always include in prompt)"
+            }
+            aria-pressed={draftPinned}
+          >
+            {draftPinned ? (
+              <Pin className="size-3.5" />
+            ) : (
+              <PinOff className="size-3.5" />
+            )}
+            {draftPinned ? "Always on" : "Pin"}
+          </Button>
           <Button
             onClick={() => void handleAdd()}
             disabled={adding || draftText.trim().length === 0}
@@ -317,8 +423,12 @@ export default function MemoryPage({ params }: PageProps) {
               }`}
             >
               <div className="flex items-start gap-3">
-                <div className="w-12 shrink-0 pt-0.5 text-sm font-medium text-primary">
-                  ★ {m.priority}
+                <div className="w-14 shrink-0 pt-0.5 text-sm font-medium text-primary">
+                  {m.pinned ? (
+                    <span title="Always on — included in every prompt">📌</span>
+                  ) : (
+                    `★ ${m.priority}`
+                  )}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div
@@ -327,6 +437,15 @@ export default function MemoryPage({ params }: PageProps) {
                     {m.text}
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    {m.pinned && (
+                      <Badge
+                        variant="default"
+                        className="text-[10px]"
+                        title="Always-on: always included in the agent prompt"
+                      >
+                        always on
+                      </Badge>
+                    )}
                     <Badge variant="outline" className="text-[10px]">
                       {m.type}
                     </Badge>
@@ -342,6 +461,21 @@ export default function MemoryPage({ params }: PageProps) {
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant={m.pinned ? "default" : "ghost"}
+                    onClick={() =>
+                      void applyUpdate(m.id, { pinned: !m.pinned })
+                    }
+                    title={m.pinned ? "Unpin (rank by priority)" : "Pin (always include in prompt)"}
+                    aria-pressed={m.pinned}
+                  >
+                    {m.pinned ? (
+                      <Pin className="size-3.5" />
+                    ) : (
+                      <PinOff className="size-3.5" />
+                    )}
+                  </Button>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -393,6 +527,11 @@ export default function MemoryPage({ params }: PageProps) {
 }
 
 function sortCompare(a: MemoryRow, b: MemoryRow, key: SortKey): number {
+  // Pinned (always-on) rows float to the top regardless of the chosen sort —
+  // they're the rows the user has marked load-bearing, and seeing them buried
+  // by usage-frequency or recency would be confusing. Within the pinned and
+  // non-pinned groups the requested sort still applies.
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
   switch (key) {
     case "priority":
       return (

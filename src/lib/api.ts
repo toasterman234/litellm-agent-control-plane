@@ -172,6 +172,11 @@ export interface AgentRow {
   deny_out?: string[];
   sandbox_files?: SandboxFileSpec[];
   /**
+   * Max non-pinned memories preloaded into AGENT_PROMPT for this agent.
+   * Pinned memories are always-included on top of this, capped server-side.
+   */
+  preload_memory_limit?: number;
+  /**
    * IDs of skills currently attached to this agent, in attach order.
    * Parsed server-side from `<!-- skill:<id> -->` markers in `prompt`.
    * Empty array when the agent has no skills.
@@ -459,6 +464,7 @@ export interface UpdateAgentRequest {
   env_vars?: Record<string, string>;
   model?: string;
   branch?: string;
+  preload_memory_limit?: number;
 }
 
 export function listAgents(): Promise<AgentRow[]> {
@@ -529,6 +535,12 @@ export interface MemoryRow {
   tags: string[];
   type: string;
   priority: number;
+  /**
+   * Always-on flag. When true, this memory is unconditionally included in
+   * the AGENT_PROMPT pre-load regardless of the priority/usage ranking. See
+   * server-side MAX_PINNED_PRELOAD for the safety cap.
+   */
+  pinned: boolean;
   disabled: boolean;
   times_applied: number;
   last_applied_at: string | null;
@@ -545,6 +557,7 @@ export interface CreateMemoryRequest {
   tags?: string[];
   type?: string;
   priority?: number;
+  pinned?: boolean;
 }
 
 export interface UpdateMemoryRequest {
@@ -552,6 +565,7 @@ export interface UpdateMemoryRequest {
   tags?: string[];
   type?: string;
   priority?: number;
+  pinned?: boolean;
   disabled?: boolean;
 }
 

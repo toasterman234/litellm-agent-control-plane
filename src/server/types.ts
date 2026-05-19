@@ -178,6 +178,12 @@ export const UpdateAgentBody = z.object({
   model: z.string().min(1).optional(),
   branch: z.string().optional(),
   /**
+   * How many memories get pre-loaded into AGENT_PROMPT (top-by-priority).
+   * Pinned rows always-include on top of this, capped server-side. Bounded
+   * here so a runaway value can't blow up the prompt.
+   */
+  preload_memory_limit: z.number().int().min(0).max(50).optional(),
+  /**
    * Replace the agent's env_vars map. Same constraints as the CreateAgentBody
    * version: max keys, max byte size, reserved keys blocked. The PATCH route
    * encrypts each value before persisting (mirrors the create flow).
@@ -324,6 +330,7 @@ export const CreateMemoryBody = z.object({
   tags: z.array(z.string()).max(8).optional(),
   type: z.string().optional(),
   priority: z.number().int().optional(),
+  pinned: z.boolean().optional(),
   source: z.enum(["agent", "slack", "ui"]).optional(),
   source_user_id: z.string().optional(),
   source_session_id: z.string().optional(),
@@ -336,6 +343,7 @@ export const UpdateMemoryBody = z.object({
   tags: z.array(z.string()).max(8).optional(),
   type: z.string().optional(),
   priority: z.number().int().optional(),
+  pinned: z.boolean().optional(),
   disabled: z.boolean().optional(),
 });
 export type UpdateMemoryBody = z.infer<typeof UpdateMemoryBody>;
@@ -373,6 +381,12 @@ export interface ApiAgent {
   allow_out: string[];
   deny_out: string[];
   sandbox_files: SandboxFileSpec[];
+  /**
+   * Max non-pinned memories preloaded into AGENT_PROMPT at session start.
+   * Pinned memories are always-included on top of this, capped server-side
+   * by MAX_PINNED_PRELOAD. Editable per-agent on /agents/:id/memory.
+   */
+  preload_memory_limit: number;
   created_at: string;
 }
 
@@ -383,6 +397,7 @@ export interface ApiMemory {
   tags: string[];
   type: string;
   priority: number;
+  pinned: boolean;
   disabled: boolean;
   times_applied: number;
   last_applied_at: string | null;
@@ -528,6 +543,9 @@ export interface ServerEnv {
   DATABASE_URL: string;
   UI_USERNAME: string;
   MASTER_KEY: string;
+  // HMAC signing key for per-pod agent tokens. Defaults to MASTER_KEY at
+  // env-load time when unset; see src/server/auth/agent-token.ts.
+  HARNESS_TOKEN_SIGNING_KEY: string;
   K8S_NAMESPACE: string; // default "default"
   // Hostname the web container reaches the kind/k8s node on. For local dev
   // with kind + docker-compose this is "host.docker.internal" (mapped via
@@ -776,6 +794,7 @@ export function toApiAgent(row: AgentRow): ApiAgent {
     sandbox_files: Array.isArray((row as Record<string, unknown>).sandbox_files)
       ? ((row as Record<string, unknown>).sandbox_files as SandboxFileSpec[])
       : [],
+    preload_memory_limit: row.preload_memory_limit,
     created_at: row.created_at.toISOString(),
   };
 }
@@ -788,6 +807,7 @@ export function toApiMemory(row: MemoryRow): ApiMemory {
     tags: row.tags,
     type: row.type,
     priority: row.priority,
+    pinned: row.pinned,
     disabled: row.disabled,
     times_applied: row.times_applied,
     last_applied_at: row.last_applied_at ? row.last_applied_at.toISOString() : null,

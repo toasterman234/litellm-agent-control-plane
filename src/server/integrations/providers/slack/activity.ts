@@ -22,6 +22,7 @@
 
 import { fetch } from "undici";
 import { getAccessToken } from "../../core/oauth";
+import { mrkdwnFromMarkdown } from "./mrkdwn";
 import type {
   Integration,
   SessionEvent,
@@ -59,17 +60,33 @@ function decodeKey(external_session_id: string): DecodedKey | null {
   return { team_id, channel, thread_ts };
 }
 
+/**
+ * Render `externalUrls` as Slack mrkdwn link suffixes. Slack uses
+ * `<url|label>` rather than `[label](url)`, so build it explicitly here
+ * instead of leaning on a markdown renderer. Returns an empty string when
+ * the list is missing/empty so callers can append unconditionally.
+ */
+function formatLinks(
+  urls: { url: string; label: string }[] | undefined,
+): string {
+  if (!urls || urls.length === 0) return "";
+  return " " + urls.map((u) => `<${u.url}|${u.label}>`).join(" · ");
+}
+
 function bodyFor(event: SessionEvent): string | null {
   switch (event.type) {
     case "thought":
       // Render as italicized note so it visually separates from real replies.
+      // The body itself is short / single-line in practice, so we skip the
+      // markdown conversion — wrapping converted bold/italic inside another
+      // `_..._` would produce confusing nested formatting.
       return `_${event.body}_`;
     case "response":
-      return event.body;
+      return mrkdwnFromMarkdown(event.body);
     case "elicit":
-      return event.body;
+      return mrkdwnFromMarkdown(event.body);
     case "error":
-      return `:warning: ${event.body}`;
+      return `:warning: ${mrkdwnFromMarkdown(event.body)}`;
     case "action":
       // Hide raw tool calls in v1 — they create huge walls of text in Slack.
       // Surface them later behind a "verbose" channel-level setting.
