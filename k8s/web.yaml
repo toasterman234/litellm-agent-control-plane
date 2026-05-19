@@ -50,7 +50,7 @@ spec:
             # Skip prisma migrate deploy — Neon pooler connection uses transaction
             # mode which doesn't support pg_advisory_lock. Run migrations separately
             # using the direct (non-pooler) connection URL before deploying.
-            - "node server-proxy.mjs"
+            - "node server-proxy-v2.mjs"
 
           ports:
             - containerPort: 10000
