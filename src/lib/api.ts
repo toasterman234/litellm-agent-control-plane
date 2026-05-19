@@ -177,6 +177,18 @@ export interface AgentRow {
    */
   preload_memory_limit?: number;
   /**
+   * Scheduled-trigger config. `cron_schedule` is null when the agent has no
+   * schedule; non-null = the worker fires a Session each time it matches.
+   * Editable via PATCH; the two timestamps are server-managed and read-only.
+   * See src/server/cron.ts.
+   */
+  cron_schedule?: string | null;
+  cron_timezone?: string;
+  cron_enabled?: boolean;
+  cron_overlap_policy?: string;
+  cron_last_fired_at?: string | null;
+  cron_next_fire_at?: string | null;
+  /**
    * IDs of skills currently attached to this agent, in attach order.
    * Parsed server-side from `<!-- skill:<id> -->` markers in `prompt`.
    * Empty array when the agent has no skills.
@@ -222,6 +234,12 @@ export interface SessionRow {
   // Optional human-readable detail for the current phase. Rendered as a
   // small subtitle under the active step.
   phase_detail?: string | null;
+  /**
+   * What started this session. "api" for an external POST /agents/{id}/session
+   * (default); "cron" for the worker's scheduled-trigger tick. Used by the
+   * agents detail page to badge cron-driven runs.
+   */
+  trigger?: string | null;
 }
 
 /**
@@ -465,6 +483,18 @@ export interface UpdateAgentRequest {
   model?: string;
   branch?: string;
   preload_memory_limit?: number;
+  /**
+   * Scheduled-trigger config. Pass `""` (or null) for `cron_schedule` to
+   * clear the schedule; pass a 5-field cron string to set it. Timezone is
+   * an IANA name (e.g. "America/Los_Angeles"). The backend recomputes
+   * `cron_next_fire_at` whenever `cron_schedule` or `cron_timezone`
+   * changes; clients should not send `cron_next_fire_at` or
+   * `cron_last_fired_at` (server-managed).
+   */
+  cron_schedule?: string | null;
+  cron_timezone?: string;
+  cron_enabled?: boolean;
+  cron_overlap_policy?: "skip";
 }
 
 export function listAgents(): Promise<AgentRow[]> {
