@@ -166,7 +166,7 @@ async function handleTtyUpgrade(clientSocket, buf, sessionId, token) {
     console.warn(`[tty-proxy] 401 session=${sessionId} presented=${token.slice(0,8)}… HARNESS_TOKEN_SET=${!!HARNESS_TOKEN} CONTAINER_TOKEN_SET=${!!CONTAINER_HARNESS_TOKEN}`);
     try {
       clientSocket.write(
-        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 418 I'm a teapot\r\nContent-Length: 0\r\nX-Source: tty-proxy\r\nConnection: close\r\n\r\n",
       );
       clientSocket.destroy();
     } catch {}
@@ -269,6 +269,7 @@ function createProxy() {
       clientSocket.removeListener("data", onData);
 
       if (!parsed) {
+        console.warn(`[tty-proxy] parse failed, buf=${buf.length}b, forwarding to next`);
         forwardToNext(clientSocket, buf);
         return;
       }
@@ -276,6 +277,7 @@ function createProxy() {
       const { requestLine, headers } = parsed;
       const urlPart = requestLine.split(" ")[1] ?? "";
       const match = urlPart.match(TTY_PATH_RE);
+      console.log(`[tty-proxy] request: ${requestLine.slice(0,80)} upgrade=${headers["upgrade"]??""} match=${!!match}`);
 
       // Intercept on URL path alone — AWS ALB strips the Upgrade header before
       // forwarding to the target, so we cannot rely on `headers["upgrade"]`.
