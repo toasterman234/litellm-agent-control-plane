@@ -2047,8 +2047,7 @@ function Composer({
               if (!e.target.files) return;
               const files = Array.from(e.target.files);
               e.target.value = "";
-              const remaining = COMPOSER_ATTACHMENTS_MAX_COUNT - attachments.length;
-              if (files.length > remaining) {
+              if (attachments.length + files.length > COMPOSER_ATTACHMENTS_MAX_COUNT) {
                 setError(`too many attachments (max ${COMPOSER_ATTACHMENTS_MAX_COUNT})`);
                 return;
               }
@@ -2056,6 +2055,7 @@ function Composer({
                 const err = await stageFile(f);
                 if (err) { setError(err); return; }
               }
+              setError(null);
             }}
           />
           <button
