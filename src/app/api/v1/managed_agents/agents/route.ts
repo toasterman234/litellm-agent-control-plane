@@ -12,6 +12,7 @@ import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { env } from "@/server/env";
 import { appendSkillBlock } from "@/server/skill-prompt";
+import { getTemplate } from "@/server/templates";
 import {
   CreateAgentBody,
   HARNESS_OPENCODE,
@@ -158,6 +159,14 @@ export const POST = wrap(async (req: Request) => {
       task_definition_arn: resolveHarnessImage(harness_id, env),
       container_port: env.CONTAINER_PORT,
       created_by: identity.user_id,
+      // Template provenance — Helm-style versioning. template_version is
+      // snapshotted at creation so we can detect drift when the template bumps.
+      ...(body.template_id
+        ? {
+            template_id: body.template_id,
+            template_version: getTemplate(body.template_id)?.version ?? 1,
+          }
+        : {}),
     },
   });
   return Response.json(toApiAgent(created));

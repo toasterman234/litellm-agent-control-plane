@@ -33,6 +33,7 @@ import {
   getSkill,
   listSessions,
   spawnSession,
+  syncAgentTemplate,
   updateAgent,
 } from "@/lib/api";
 
@@ -96,6 +97,8 @@ export default function AgentDetailPage({ params }: PageProps) {
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
+
+  const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -177,6 +180,21 @@ export default function AgentDetailPage({ params }: PageProps) {
     },
     [agent],
   );
+
+  async function handleTemplateSync() {
+    if (!agent || syncing) return;
+    setSyncing(true);
+    try {
+      await syncAgentTemplate(id);
+      const updated = await getAgent(id);
+      setAgent(updated);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : (err as Error).message;
+      setError(msg);
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   function openEdit() {
     if (!agent) return;
@@ -321,6 +339,25 @@ export default function AgentDetailPage({ params }: PageProps) {
                   <Badge variant="outline" className="font-mono text-[11px]">
                     {agent.harness_id}
                   </Badge>
+                  {agent.template_id && (
+                    <Badge variant="outline" className="font-mono text-[11px]">
+                      {agent.template_id} v{agent.template_version ?? "?"}
+                    </Badge>
+                  )}
+                  {agent.template_id && !agent.template_in_sync && (
+                    <button
+                      onClick={() => void handleTemplateSync()}
+                      disabled={syncing}
+                      className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 hover:bg-amber-500/20 disabled:opacity-50 dark:text-amber-400"
+                    >
+                      {syncing ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="size-3" />
+                      )}
+                      v{agent.template_latest_version} available
+                    </button>
+                  )}
                   <span className="text-[12px] text-muted-foreground">
                     Created {formatTime(agent.created_at)}
                   </span>

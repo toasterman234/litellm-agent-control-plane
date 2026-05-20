@@ -27,6 +27,8 @@ export interface AgentTemplate {
   name: string;
   description: string;
   icon: string;
+  /** Monotonically increasing integer. Bump when a change should propagate to existing agents. */
+  version: number;
   tags: string[];
   harness_id: string;
   model: string;
@@ -46,6 +48,7 @@ interface RawTemplate {
   name: string;
   description: string;
   icon: string;
+  version?: number;
   tags?: string[];
   harness_id: string;
   model: string;
@@ -111,6 +114,7 @@ function fromRaw(raw: RawTemplate): AgentTemplate {
     name: raw.name,
     description: raw.description,
     icon: raw.icon,
+    version: raw.version ?? 1,
     tags: raw.tags ?? [],
     harness_id: raw.harness_id,
     model: raw.model,
