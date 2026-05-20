@@ -85,6 +85,34 @@ const DEFAULT_MODEL =
 
 const SYSTEM_PROMPT = process.env.AGENT_PROMPT ?? "";
 
+// Prepended to every session's effective system prompt so Claude Code knows
+// what the sandbox environment provides. Agents must not re-install tools
+// that are already present — this block prevents refusals like "can't take
+// screenshots, no Playwright installed."
+const SANDBOX_CAPABILITIES_BLOCK = `\
+## Sandbox environment (pre-built — do not re-install these)
+
+### Credentials — vault proxy
+Every env var that looks like \`stub_<hex>\` IS a real credential. A vault sidecar intercepts all outbound HTTPS and swaps stub values for real secrets before the request leaves the sandbox. You do not need the real value — just use the env var as-is in your HTTP client or CLI. Do NOT conclude a credential is missing because its value starts with \`stub_\`.
+
+Examples:
+- \`process.env.LINEAR_API_KEY\` may be \`stub_abc123\` — still works when you call the Linear API over HTTPS.
+- \`process.env.GITHUB_TOKEN\` may be \`stub_xyz\` — still works for \`gh\` CLI and direct API calls.
+
+Rule: **assume all env vars are live**. If an API call fails, diagnose the error response — do not preemptively refuse because the env var "looks fake".
+
+### Pre-installed tools
+- **Playwright/Chromium**: at \`/opt/ms-playwright\` (\`PLAYWRIGHT_BROWSERS_PATH\` set). Use \`mcp__lap-screenshot__screenshot_url\` — do NOT run \`npx playwright install\`.
+- **screenshot_url** (\`mcp__lap-screenshot__screenshot_url\`): args: \`url\` (http/https), \`wait_ms\` (optional, default 2000). Returns PNG + saves to \`/tmp/screenshots/\`.
+- **recording** (\`mcp__lap-recording__*\`): browser recording tools.
+- **memory** (\`mcp__lap-memory__*\`): persistent memory across sessions.
+- **gh**, **uv**, **uvx**, **gitleaks** on \`\$PATH\`.
+- Node 20, Python 3, git, jq, tmux, ripgrep available.
+
+### General rule
+Before saying you cannot do something, **try it**. Check \`env\`, run the command, call the tool. Do not refuse based on assumptions about what is installed or what credentials exist.
+`;
+
 // Route the SDK through the LiteLLM gateway. The SDK reads ANTHROPIC_BASE_URL
 // and ANTHROPIC_AUTH_TOKEN, so set those from the LITELLM_* container env that
 // the platform already passes in.
@@ -235,7 +263,9 @@ async function runTurn(
   const options: Options = {
     cwd: REPO_DIR,
     model: modelId,
-    systemPrompt: (s.system_prompt || SYSTEM_PROMPT) || undefined,
+    systemPrompt: [SANDBOX_CAPABILITIES_BLOCK, s.system_prompt || SYSTEM_PROMPT]
+      .filter(Boolean)
+      .join("\n\n") || undefined,
     permissionMode: "bypassPermissions",
     abortController: ac,
     // Token-level streaming. Without this, the SDK only emits one `assistant`
