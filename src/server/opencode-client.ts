@@ -8,7 +8,7 @@
  * the host via LAP_INTERNAL_URL.
  */
 
-import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
+import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/client";
 
 import { env } from "@/server/env";
 
