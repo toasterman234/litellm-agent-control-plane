@@ -629,6 +629,11 @@ export interface ServerEnv {
    */
   PLATFORM_INTERNAL_URL: string;
   LOCAL_SANDBOX_URL: string | undefined;
+  // Shared secret the platform injects into executor pod env and validates
+  // on every /execute call. Optional so local dev without K8s still works
+  // (omitting the var skips the check on both sides); production Sandbox CRs
+  // should always set this via the litellm-env secret.
+  EXECUTOR_SECRET?: string;
   CONTAINER_PORT: number; // default 4096
   RECONCILE_INTERVAL_SECONDS: number; // default 60
   // Warm pool. WARM_POOL_SIZE = 0 disables the feature entirely; default of

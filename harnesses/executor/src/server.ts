@@ -1,9 +1,30 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { exec } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
+
+const EXECUTOR_SECRET = process.env.EXECUTOR_SECRET ?? "";
+
+/**
+ * Constant-time comparison to prevent timing-oracle attacks on the secret.
+ * Returns true when the provided token matches EXECUTOR_SECRET (or when no
+ * secret is configured, so local dev without K8s works out of the box).
+ */
+function checkSecret(token: string | undefined): boolean {
+  if (!EXECUTOR_SECRET) return true; // no secret configured — open for local dev
+  if (!token) return false;
+  try {
+    const a = Buffer.from(EXECUTOR_SECRET);
+    const b = Buffer.from(token);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
 
 const app = new Hono();
 
@@ -12,6 +33,11 @@ app.get("/health", (c) => {
 });
 
 app.post("/execute", async (c) => {
+  const token = c.req.header("x-executor-secret");
+  if (!checkSecret(token)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
   const { cmd } = await c.req.json<{ cmd: string }>();
   const cwd = process.env.REPO_DIR ?? undefined;
 

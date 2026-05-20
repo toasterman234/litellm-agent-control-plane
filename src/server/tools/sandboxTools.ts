@@ -53,10 +53,13 @@ export async function executeSandbox(
   }
 
   const url = `${sandbox_url.replace(/\/+$/, "")}/execute`;
+  const secret = env.EXECUTOR_SECRET;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (secret) headers["x-executor-secret"] = secret;
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ cmd }),
       signal: AbortSignal.timeout(EXECUTE_TIMEOUT_MS),
     });
