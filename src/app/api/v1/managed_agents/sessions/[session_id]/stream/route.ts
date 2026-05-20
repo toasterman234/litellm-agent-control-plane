@@ -127,6 +127,11 @@ export async function GET(req: Request, ctx: RouteContext) {
   try {
     assertAuth(req);
     const { session_id } = await ctx.params;
+    // `follow=1` keeps the stream open across turns: session.idle is forwarded
+    // but does NOT close the connection, so a later turn (e.g. a Slack
+    // follow-up on the same session) streams into the same open stream. The UI
+    // uses this; one-shot SDK consumers omit it and get close-on-idle.
+    const follow = new URL(req.url).searchParams.get("follow") === "1";
 
     // Fast-path checks before we commit to a 60s wait: 404 / 410 surface
     // immediately so SDK consumers don't sit idle on a doomed session.
@@ -227,9 +232,10 @@ export async function GET(req: Request, ctx: RouteContext) {
           // sends. The harness's events already have a `type` at the top
           // level.
           send(evt);
-          // session.idle for this session means the agent loop returned
-          // control. Close the stream cleanly.
-          if (evt.type === "session.idle") return true;
+          // session.idle means the agent loop returned control. Close the
+          // stream cleanly — unless in follow mode, where we keep listening so
+          // the next turn on this session streams into the same connection.
+          if (evt.type === "session.idle") return !follow;
           return false;
         };
 
