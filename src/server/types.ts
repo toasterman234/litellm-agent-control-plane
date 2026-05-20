@@ -426,6 +426,10 @@ export interface ApiSession {
   id: string;
   agent_id: string;
   sandbox_url: string | null;
+  // opencode/harness session id inside the pod. The browser opencode SDK
+  // needs it to address session.prompt / session.messages. Null until the
+  // harness session is created during bring-up.
+  harness_session_id: string | null;
   // Browser-accessible WebSocket base URL for TUI harnesses.
   // - IN_CLUSTER deployments: a relative path routed through the platform's
   //   TCP proxy (server-proxy.mjs) so the browser never dials the
@@ -943,6 +947,7 @@ export function toApiSession(
     id: row.session_id,
     agent_id: row.agent_id,
     sandbox_url: row.sandbox_url ?? null,
+    harness_session_id: row.harness_session_id ?? null,
     tty_url: ttyUrl,
     tty_token: ttyToken,
     supports_tui: supportsTui,
