@@ -99,6 +99,7 @@ export default function AgentDetailPage({ params }: PageProps) {
   const [deleteInProgress, setDeleteInProgress] = useState(false);
 
   const [syncing, setSyncing] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -188,12 +189,27 @@ export default function AgentDetailPage({ params }: PageProps) {
       await syncAgentTemplate(id);
       const updated = await getAgent(id);
       setAgent(updated);
+      setSyncOpen(false);
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : (err as Error).message;
       setError(msg);
     } finally {
       setSyncing(false);
     }
+  }
+
+  function computeLineDiff(
+    oldText: string,
+    newText: string,
+  ): Array<{ type: "add" | "remove"; line: string }> {
+    const oldLines = oldText.split("\n");
+    const newLines = newText.split("\n");
+    const oldSet = new Set(oldLines);
+    const newSet = new Set(newLines);
+    const result: Array<{ type: "add" | "remove"; line: string }> = [];
+    for (const line of oldLines) if (!newSet.has(line)) result.push({ type: "remove", line });
+    for (const line of newLines) if (!oldSet.has(line)) result.push({ type: "add", line });
+    return result;
   }
 
   function openEdit() {
@@ -344,20 +360,6 @@ export default function AgentDetailPage({ params }: PageProps) {
                       {agent.template_id} v{agent.template_version ?? "?"}
                     </Badge>
                   )}
-                  {agent.template_id && !agent.template_in_sync && (
-                    <button
-                      onClick={() => void handleTemplateSync()}
-                      disabled={syncing}
-                      className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 hover:bg-amber-500/20 disabled:opacity-50 dark:text-amber-400"
-                    >
-                      {syncing ? (
-                        <Loader2 className="size-3 animate-spin" />
-                      ) : (
-                        <RefreshCw className="size-3" />
-                      )}
-                      v{agent.template_latest_version} available
-                    </button>
-                  )}
                   <span className="text-[12px] text-muted-foreground">
                     Created {formatTime(agent.created_at)}
                   </span>
@@ -365,6 +367,17 @@ export default function AgentDetailPage({ params }: PageProps) {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {agent.template_id && !agent.template_in_sync && (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={() => setSyncOpen(true)}
+                  className="border-amber-500/50 text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
+                >
+                  <RefreshCw className="size-4" />
+                  Update available
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"
@@ -653,6 +666,51 @@ export default function AgentDetailPage({ params }: PageProps) {
             </Button>
             <Button variant="destructive" onClick={() => void handleDeleteAgent()} disabled={deleteInProgress}>
               {deleteInProgress ? "Deleting…" : "Delete agent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Template sync diff modal */}
+      <Dialog open={syncOpen} onOpenChange={setSyncOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Template update available</DialogTitle>
+            <DialogDescription>
+              {agent?.template_id} v{agent?.template_version ?? "?"} → v{agent?.template_latest_version}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="max-h-[50vh] overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[12px]">
+            {agent && computeLineDiff(agent.prompt ?? "", agent.template_latest_prompt ?? "").length === 0 ? (
+              <p className="text-muted-foreground">No prompt changes detected.</p>
+            ) : (
+              agent && computeLineDiff(agent.prompt ?? "", agent.template_latest_prompt ?? "").map((chunk, i) => (
+                <div
+                  key={i}
+                  className={
+                    chunk.type === "add"
+                      ? "bg-green-500/10 text-green-600 dark:text-green-400"
+                      : "bg-red-500/10 text-red-500 line-through dark:text-red-400"
+                  }
+                >
+                  {chunk.type === "add" ? "+ " : "- "}{chunk.line || " "}
+                </div>
+              ))
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSyncOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleTemplateSync()} disabled={syncing}>
+              {syncing ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <RefreshCw className="size-4" />
+              )}
+              Update to v{agent?.template_latest_version}
             </Button>
           </DialogFooter>
         </DialogContent>

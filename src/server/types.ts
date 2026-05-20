@@ -416,6 +416,8 @@ export interface ApiAgent {
   template_latest_version: number | null;
   /** False when template_version < template_latest_version — "sync available". */
   template_in_sync: boolean;
+  /** Current template prompt text — for client-side diff against agent.prompt. Null if not template-derived. */
+  template_latest_prompt: string | null;
   created_at: string;
 }
 
@@ -849,6 +851,9 @@ export function toApiAgent(row: AgentRow): ApiAgent {
     template_in_sync: row.template_id
       ? (row.template_version ?? 0) >= (getTemplate(row.template_id)?.version ?? 1)
       : true,
+    template_latest_prompt: row.template_id
+      ? (getTemplate(row.template_id)?.prompt ?? null)
+      : null,
     created_at: row.created_at.toISOString(),
   };
 }

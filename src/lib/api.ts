@@ -190,6 +190,8 @@ export interface AgentRow {
   template_latest_version?: number | null;
   /** False when template_version < template_latest_version — "sync available". */
   template_in_sync?: boolean;
+  /** Current template prompt text — diff this against agent.prompt to show what changed. */
+  template_latest_prompt?: string | null;
   created_at?: string | null;
   session_count?: number;
   has_active_session?: boolean;
