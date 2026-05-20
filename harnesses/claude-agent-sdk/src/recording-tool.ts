@@ -266,7 +266,7 @@ export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
               "-c:v", "libx264", "-pix_fmt", "yuv420p",
               "-movflags", "+faststart",
               mp4Path,
-            ]);
+            ], { timeout: 120_000 });
             return ok(`Recording saved to ${mp4Path}. Commit to proof/demo.mp4 on the PR branch.`);
           } catch {
             // ffmpeg not available — return raw webm path
