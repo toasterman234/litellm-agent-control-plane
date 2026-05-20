@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   createSdkMcpServer,
   tool,
@@ -8,6 +9,8 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Browser, BrowserContext, Page } from "playwright";
+
+const execFileAsync = promisify(execFile);
 
 interface RecordingSession {
   browser: Browser;
@@ -17,6 +20,18 @@ interface RecordingSession {
 
 const sessions = new Map<string, RecordingSession>();
 
+// Close all open browser sessions on process exit to prevent leaked Playwright processes.
+async function closeAllSessions() {
+  for (const [id, s] of sessions) {
+    try { await s.context.close(); } catch {}
+    try { await s.browser.close(); } catch {}
+    sessions.delete(id);
+  }
+}
+for (const sig of ["exit", "SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => { closeAllSessions().catch(() => {}); });
+}
+
 export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
   // ---------------------------------------------------------------------------
   // recording_start
@@ -25,7 +40,13 @@ export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
     "recording_start",
     "Start a screen recording session. Opens a headless Chromium browser with video recording enabled and navigates to the given URL. Returns a session_id used by all other recording tools. Save the .webm to the repo as proof when done.",
     {
-      url: z.string().url().describe("URL to open first (http or https only)"),
+      url: z
+        .string()
+        .url()
+        .refine((u) => /^https?:$/.test(new URL(u).protocol), {
+          message: "Only http(s) URLs are supported",
+        })
+        .describe("URL to open first (http or https only)"),
       width: z.number().optional().describe("Viewport width, default 1600"),
       height: z.number().optional().describe("Viewport height, default 900"),
     },
@@ -40,30 +61,35 @@ export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
         headless: true,
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
       });
-      const context = await browser.newContext({
-        recordVideo: { dir, size: { width: w, height: h } },
-        viewport: { width: w, height: h },
-      });
-      const page = await context.newPage();
-
       try {
-        await page.goto(input.url, { waitUntil: "networkidle", timeout: 30000 });
-      } catch (err) {
-        // domcontentloaded fallback for slow pages
-        await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        const context = await browser.newContext({
+          recordVideo: { dir, size: { width: w, height: h } },
+          viewport: { width: w, height: h },
+        });
+        const page = await context.newPage();
+
+        try {
+          await page.goto(input.url, { waitUntil: "networkidle", timeout: 30000 });
+        } catch {
+          // domcontentloaded fallback for slow pages
+          await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        }
+
+        const sessionId = randomUUID();
+        sessions.set(sessionId, { browser, context, page });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Recording started. session_id: ${sessionId}`,
+            },
+          ],
+        };
+      } catch (e) {
+        await browser.close();
+        return err(`recording_start failed: ${e instanceof Error ? e.message : String(e)}`);
       }
-
-      const sessionId = randomUUID();
-      sessions.set(sessionId, { browser, context, page });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `Recording started. session_id: ${sessionId}`,
-          },
-        ],
-      };
     },
   );
 
@@ -75,7 +101,13 @@ export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
     "Navigate the recording browser to a new URL mid-recording.",
     {
       session_id: z.string().describe("session_id from recording_start"),
-      url: z.string().url().describe("URL to navigate to"),
+      url: z
+        .string()
+        .url()
+        .refine((u) => /^https?:$/.test(new URL(u).protocol), {
+          message: "Only http(s) URLs are supported",
+        })
+        .describe("URL to navigate to (http or https only)"),
     },
     async (input: { session_id: string; url: string }) => {
       const s = sessions.get(input.session_id);
@@ -136,7 +168,7 @@ export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
     "Pause the recording for a fixed duration so the viewer can read the current screen state. Use 1000–2000ms after interactions, 2000–3000ms when key evidence is visible.",
     {
       session_id: z.string(),
-      ms: z.number().describe("Duration to wait in milliseconds"),
+      ms: z.number().min(0).max(10000).describe("Duration to wait in milliseconds (capped at 10 000 ms)"),
     },
     async (input: { session_id: string; ms: number }) => {
       const s = sessions.get(input.session_id);
@@ -207,7 +239,7 @@ export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
   // ---------------------------------------------------------------------------
   const recordingStop = tool(
     "recording_stop",
-    "Stop the recording and finalize the video file. Returns the path to the saved .webm file. Commit it to the repo (e.g. proof/demo.webm) as visual proof of the e2e flow.",
+    "Stop the recording and finalize the video file. Returns the path to the saved .mp4 file (or .webm if ffmpeg is unavailable). Commit it to the repo (e.g. proof/demo.mp4) as visual proof of the e2e flow.",
     {
       session_id: z.string(),
     },
@@ -225,7 +257,7 @@ export function buildRecordingMcpServer(): McpSdkServerConfigWithInstance {
         if (finalPath) {
           const mp4Path = finalPath.replace(/\.webm$/, ".mp4");
           try {
-            execFileSync("ffmpeg", [
+            await execFileAsync("ffmpeg", [
               "-i", finalPath,
               "-c:v", "libx264", "-pix_fmt", "yuv420p",
               "-movflags", "+faststart",
