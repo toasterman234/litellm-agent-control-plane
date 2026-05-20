@@ -121,7 +121,7 @@ export async function POST(req: Request, ctx: RouteContext) {
     // -------------------------------------------------------------------------
     // brain-inline path — call the in-process brain instead of an external pod
     // -------------------------------------------------------------------------
-    if (cached.harness_id === "brain-inline") {
+    if (cached.harness_id === "claude-code-brain-inline") {
       const agent = await prisma.agent.findUnique({
         where: { agent_id: cached.agent_id },
       });

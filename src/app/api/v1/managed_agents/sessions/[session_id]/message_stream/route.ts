@@ -127,7 +127,7 @@ export async function POST(req: Request, ctx: RouteContext) {
     // The SSE comment (": keepalive") is emitted every 25 s to prevent proxy
     // idle-connection timeouts during long tool-use sessions where there may be
     // silent gaps between LiteLLM calls.
-    if (row.agent.harness_id === "brain-inline") {
+    if (row.agent.harness_id === "claude-code-brain-inline") {
       const KEEPALIVE_INTERVAL_MS = 25_000;
       const keepaliveBytes = new TextEncoder().encode(": keepalive\n\n");
 

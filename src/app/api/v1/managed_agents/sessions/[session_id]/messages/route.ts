@@ -27,7 +27,7 @@ export async function GET(req: Request, ctx: RouteContext) {
     const row = await prisma.session.findUnique({ where: { session_id }, include: { agent: true } });
     if (!row) httpError(404, `session ${session_id} not found`);
 
-    if (row.agent.harness_id === "brain-inline") {
+    if (row.agent.harness_id === "claude-code-brain-inline") {
       // Brain-inline stores history directly — no harness to call
       if (Array.isArray(row.history) && row.history.length > 0) {
         return Response.json(row.history);
