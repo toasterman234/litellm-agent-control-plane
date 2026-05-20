@@ -29,8 +29,21 @@ import type {
   SessionEventContext,
 } from "../../core/types";
 
-const POST_URL = "https://slack.com/api/chat.postMessage";
-const REACT_URL = "https://slack.com/api/reactions.add";
+// Slack Web API base. Overridable for local dev so a simulator can capture
+// the bot's outbound chat.postMessage / chat.update calls (the real API needs
+// a live workspace + bot token). Defaults to the real Slack API.
+const SLACK_API_BASE = (
+  process.env.SLACK_API_BASE || "https://slack.com/api"
+).replace(/\/+$/, "");
+const POST_URL = `${SLACK_API_BASE}/chat.postMessage`;
+const UPDATE_URL = `${SLACK_API_BASE}/chat.update`;
+const REACT_URL = `${SLACK_API_BASE}/reactions.add`;
+
+// streamKey -> the Slack message we're editing in place for that turn. Lets a
+// streamed `response` post once then chat.update as text/activity change,
+// instead of spamming the thread. In-memory (per process) — fine for the
+// single web instance; a multi-instance deploy would move this to the DB.
+const streamMessages = new Map<string, { ts: string; channel: string }>();
 
 interface SlackPostResponse {
   ok: boolean;
@@ -175,6 +188,73 @@ async function postReaction(
   }
 }
 
+// Post a streamed `response` once, then edit it in place as text/activity
+// change. The message shows the assistant text with a muted "doing now"
+// subtext (e.g. "_Reading: …/file.py_"), dropped on the final update.
+async function postOrUpdateStream(
+  integration: Integration,
+  ctx: SessionEventContext,
+  decoded: { channel: string; thread_ts?: string },
+): Promise<void> {
+  if (ctx.event.type !== "response" || !ctx.event.streamKey) return;
+  const text = mrkdwnFromMarkdown(ctx.event.body || "");
+  const activity = ctx.event.activity;
+  const display =
+    activity && !ctx.event.final
+      ? text
+        ? `${text}\n\n_${activity}_`
+        : `_${activity}_`
+      : text;
+  if (!display) return;
+
+  const urls = externalUrlsFor(ctx.event);
+  const blocks =
+    urls && urls.length > 0
+      ? [
+          { type: "section", text: { type: "mrkdwn", text: display } },
+          buttonBlock(urls),
+        ]
+      : undefined;
+
+  const accessToken = await getAccessToken(ctx.install.install_id, integration);
+  const existing = streamMessages.get(ctx.event.streamKey);
+
+  const payload: Record<string, unknown> = existing
+    ? { channel: existing.channel, ts: existing.ts, text: display }
+    : { channel: decoded.channel, text: display };
+  if (blocks) payload.blocks = blocks;
+  if (!existing && decoded.thread_ts) payload.thread_ts = decoded.thread_ts;
+
+  const res = await fetch(existing ? UPDATE_URL : POST_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    console.warn(
+      `[slack] chat.${existing ? "update" : "postMessage"} HTTP ${res.status}`,
+    );
+    return;
+  }
+  const json = (await res.json()) as { ok: boolean; ts?: string; error?: string };
+  if (!json.ok) {
+    console.warn(
+      `[slack] chat.${existing ? "update" : "postMessage"} not ok: ${json.error}`,
+    );
+    return;
+  }
+  if (!existing && json.ts) {
+    streamMessages.set(ctx.event.streamKey, {
+      ts: json.ts,
+      channel: decoded.channel,
+    });
+  }
+  if (ctx.event.final) streamMessages.delete(ctx.event.streamKey);
+}
+
 export async function postActivity(
   integration: Integration,
   ctx: SessionEventContext,
@@ -189,6 +269,12 @@ export async function postActivity(
     console.warn(
       `[slack] cannot decode external_session_id="${ctx.externalSessionId}"`,
     );
+    return;
+  }
+
+  // Streaming response: one message per turn, edited in place as it streams.
+  if (ctx.event.type === "response" && ctx.event.streamKey) {
+    await postOrUpdateStream(integration, ctx, decoded);
     return;
   }
 
