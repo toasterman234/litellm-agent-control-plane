@@ -122,8 +122,13 @@ export function useOpencodeThread(
           });
           if (
             sid === harnessSessionId &&
-            (e.type === "session.idle" || e.type === "session.aborted")
+            (e.type === "session.idle" ||
+              e.type === "session.aborted" ||
+              e.type === "session.error")
           ) {
+            // session.error must clear busy too, or an agent error (rate limit,
+            // context overflow, harness crash) locks the composer on a spinner
+            // until a hard refresh.
             setBusy(false);
           }
         }
