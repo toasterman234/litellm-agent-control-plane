@@ -44,6 +44,7 @@ import {
   isDeadSessionError,
   isHardConnectFailure,
 } from "@/server/harness";
+import { registry } from "@/server/metrics";
 import { safeStopTask } from "@/server/reconcile";
 import { invalidateSession } from "@/server/sessionCache";
 import {
@@ -173,6 +174,7 @@ export async function POST(req: Request, ctx: RouteContext) {
         } catch (err) {
           console.error("harness event stream open failed", err);
           if (isHardConnectFailure(err) || isDeadSessionError(err)) {
+            registry.inc("session_death_total", { reason: "sandbox_unreachable" });
             await prisma.session
               .updateMany({
                 where: { session_id, status: "ready" },
@@ -208,6 +210,7 @@ export async function POST(req: Request, ctx: RouteContext) {
         } catch (err) {
           console.error("harness prompt_async failed", err);
           if (isHardConnectFailure(err) || isDeadSessionError(err)) {
+            registry.inc("session_death_total", { reason: "sandbox_unreachable" });
             await prisma.session
               .updateMany({
                 where: { session_id, status: "ready" },

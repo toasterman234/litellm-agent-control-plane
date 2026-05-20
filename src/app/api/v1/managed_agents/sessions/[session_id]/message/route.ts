@@ -33,6 +33,7 @@ import {
   isDeadSessionError,
   isHardConnectFailure,
 } from "@/server/harness";
+import { registry } from "@/server/metrics";
 import { safeStopTask } from "@/server/reconcile";
 import {
   ensureFlushLoop,
@@ -89,7 +90,13 @@ export async function POST(req: Request, ctx: RouteContext) {
     const { session_id } = await ctx.params;
     const body = SendMessageBody.parse(await req.json());
 
-    const cached = await getCachedSession(session_id);
+    let cached;
+    try {
+      cached = await getCachedSession(session_id);
+    } catch (dbErr) {
+      console.error("getCachedSession DB error for session", session_id, dbErr);
+      throw new HttpError(503, "session store temporarily unavailable");
+    }
     if (!cached) {
       // Cache miss + DB row absent / not ready / not fully provisioned. We
       // collapse the prior 404 / 409 distinction into a single 404 here —
@@ -123,6 +130,7 @@ export async function POST(req: Request, ctx: RouteContext) {
         // Drop the cache entry up front so concurrent in-flight requests
         // don't keep dialing a dead pod.
         invalidateSession(session_id);
+        registry.inc("session_death_total", { reason: "sandbox_unreachable" });
         try {
           // updateMany so the status guard is part of the WHERE — avoids a
           // race with the reconciler flipping the row first.

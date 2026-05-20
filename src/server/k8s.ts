@@ -655,8 +655,8 @@ export async function runTask(
                 // number of warm + active sandboxes (4 vCPU / ~6GiB usable
                 // typically). Limits stay generous so a chatty session
                 // burst isn't artificially throttled.
-                requests: { cpu: "100m", memory: "256Mi" },
-                limits: { cpu: "1", memory: "1Gi" },
+                requests: { cpu: "100m", memory: "512Mi" },
+                limits: { cpu: "1", memory: "2Gi" },
               },
             },
             {
