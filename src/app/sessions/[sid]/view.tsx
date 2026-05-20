@@ -2045,11 +2045,17 @@ function Composer({
             className="hidden"
             onChange={async (e) => {
               if (!e.target.files) return;
-              for (const f of Array.from(e.target.files)) {
-                const err = await stageFile(f);
-                if (err) { setError(err); break; }
-              }
+              const files = Array.from(e.target.files);
               e.target.value = "";
+              const remaining = COMPOSER_ATTACHMENTS_MAX_COUNT - attachments.length;
+              if (files.length > remaining) {
+                setError(`too many attachments (max ${COMPOSER_ATTACHMENTS_MAX_COUNT})`);
+                return;
+              }
+              for (const f of files) {
+                const err = await stageFile(f);
+                if (err) { setError(err); return; }
+              }
             }}
           />
           <button
