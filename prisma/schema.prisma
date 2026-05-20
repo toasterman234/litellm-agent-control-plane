@@ -52,6 +52,7 @@ model Agent {
    */
   template_id         String?
   template_version    Int?
+  template_prompt     String?  // snapshot of template.prompt at creation/last-sync; used for diff display
   created_at          DateTime @default(now())
   created_by          String?
 

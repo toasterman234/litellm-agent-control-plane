@@ -170,7 +170,8 @@ export const POST = wrap(async (req: Request) => {
       ...(body.template_id
         ? {
             template_id: body.template_id,
-            template_version: getTemplate(body.template_id)?.version ?? 1,
+            template_version: getTemplate(body.template_id)!.version,
+            template_prompt: getTemplate(body.template_id)!.prompt,
           }
         : {}),
     },

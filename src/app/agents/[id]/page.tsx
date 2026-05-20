@@ -770,7 +770,7 @@ export default function AgentDetailPage({ params }: PageProps) {
             {/* Diff body */}
             <div className="flex-1 overflow-y-auto">
               {(() => {
-                const raw = computeLineDiff(agent.prompt ?? "", agent.template_latest_prompt ?? "");
+                const raw = computeLineDiff(agent.template_prompt ?? "", agent.template_latest_prompt ?? "");
                 const hasChanges = raw.some((c) => c.type !== "same");
                 const chunks = collapseContext(raw);
                 return hasChanges ? (

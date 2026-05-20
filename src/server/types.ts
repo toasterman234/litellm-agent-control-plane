@@ -416,7 +416,9 @@ export interface ApiAgent {
   template_latest_version: number | null;
   /** False when template_version < template_latest_version — "sync available". */
   template_in_sync: boolean;
-  /** Current template prompt text — for client-side diff against agent.prompt. Null if not template-derived. */
+  /** Snapshot of template.prompt at last creation/sync — the "before" side of the diff. Null if not template-derived or agent predates this field. */
+  template_prompt: string | null;
+  /** Current template prompt text — the "after" side of the diff. Null if not template-derived. */
   template_latest_prompt: string | null;
   created_at: string;
 }
@@ -845,15 +847,15 @@ export function toApiAgent(row: AgentRow): ApiAgent {
     preload_memory_limit: row.preload_memory_limit,
     template_id: row.template_id ?? null,
     template_version: row.template_version ?? null,
-    template_latest_version: row.template_id
-      ? (getTemplate(row.template_id)?.version ?? null)
-      : null,
-    template_in_sync: row.template_id
-      ? (row.template_version ?? 0) >= (getTemplate(row.template_id)?.version ?? 1)
-      : true,
-    template_latest_prompt: row.template_id
-      ? (getTemplate(row.template_id)?.prompt ?? null)
-      : null,
+    ...(() => {
+      const tpl = row.template_id ? getTemplate(row.template_id) : undefined;
+      return {
+        template_latest_version: tpl?.version ?? null,
+        template_in_sync: tpl ? (row.template_version ?? 0) >= tpl.version : true,
+        template_prompt: row.template_prompt ?? null,
+        template_latest_prompt: tpl?.prompt ?? null,
+      };
+    })(),
     created_at: row.created_at.toISOString(),
   };
 }

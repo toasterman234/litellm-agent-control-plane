@@ -57,7 +57,7 @@ export const POST = wrap(
 
     await prisma.agent.update({
       where: { agent_id },
-      data: { template_version: newVersion },
+      data: { template_version: newVersion, template_prompt: template!.prompt },
     });
 
     // Invalidate warm tasks so the next session spawn reads the updated
