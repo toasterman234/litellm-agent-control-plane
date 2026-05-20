@@ -56,7 +56,10 @@ export async function GET(req: Request, ctx: RouteContext) {
     const base = explicit || `http://127.0.0.1:${port}`;
     const upstreamUrl =
       `${base}/api/v1/managed_agents/sessions/` +
-      `${encodeURIComponent(session_id)}/stream`;
+      // follow=1: keep the stream open across turns so follow-ups (incl.
+      // Slack-triggered) stream into the open tab instead of being missed
+      // after the first turn's session.idle closes the connection.
+      `${encodeURIComponent(session_id)}/stream?follow=1`;
 
     // Tie upstream lifetime to the client connection. EventSource closes
     // its socket on page unload / .close(); Next forwards that as a
