@@ -69,6 +69,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useSdkMessageStream } from "./sdk-stream";
+import { foldSdkMessages } from "@/lib/fold-sdk-messages";
 import { TerminalPanel } from "./terminal-panel";
 import { SessionSidebar, extractLatestTasks } from "./session-sidebar";
 
@@ -305,17 +306,36 @@ export default function SessionThreadView() {
     return "";
   }, [session, agent]);
 
-  // Subscribe to the session-wide SSE while the harness is up. We use the
-  // accumulated message count only as a "new harness event" signal to drive
-  // `refreshThread()` below — the raw SDK stream is never rendered. This is
-  // what makes externally-triggered turns (Slack webhook → /message → harness
-  // bus) paint on the open tab without waiting for the 5s poll cycle.
+  // Subscribe to the session-wide SSE while the harness is up. The harness
+  // streams one `claude_sdk_message` per SDK message; we render those directly
+  // (see `liveTurns`) so externally-triggered turns (Slack @mention, Linear
+  // assign) stream in live. The stream is the single source of truth for any
+  // turn that arrives while the page is open — we never re-pull the whole
+  // session to render it.
   const sdkStreamEnabled = !!sessionId && session?.status === "ready";
   const { messages: sdkMessages } = useSdkMessageStream(
     sessionId,
     sdkStreamEnabled,
   );
-  const lastSdkLenRef = useRef(0);
+
+  // The live turns, rendered directly from the SDK stream and appended to the
+  // thread as frames arrive. `foldSdkMessages` collapses partial stream_event
+  // frames into rolling assistant messages and splits a multi-step turn into
+  // one folded assistant message per segment — we render every assistant
+  // segment so steps accumulate instead of overwriting each other.
+  const liveTurns = useMemo<LocalMessage[]>(() => {
+    if (sdkMessages.length === 0) return [];
+    const out: LocalMessage[] = [];
+    foldSdkMessages(sdkMessages).forEach((f, i) => {
+      if (f.type !== "assistant") return;
+      const content = ((f as { message?: { content?: unknown } }).message
+        ?.content ?? []) as Array<{ type: string; [k: string]: unknown }>;
+      const parts = foldedAssistantToParts(content);
+      if (parts.length === 0) return;
+      out.push({ id: `__live_${i}`, role: "assistant", status: "completed", parts });
+    });
+    return out;
+  }, [sdkMessages]);
 
   // Pull the full opencode thread and replace local state. Source of truth
   // lives in the harness — POST /message only returns the final assistant
@@ -354,20 +374,6 @@ export default function SessionThreadView() {
       console.warn("listSessionMessages failed", e);
     }
   }, [sessionId]);
-
-  // Bridge: when the persistent SSE sees new harness frames, pull canonical
-  // messages so the existing renderer picks them up. We skip while a local
-  // UI-initiated stream is draining — that path writes token deltas straight
-  // into `messages`, and a mid-stream refresh would clobber them with the
-  // older harness-side snapshot.
-  useEffect(() => {
-    if (sdkMessages.length === lastSdkLenRef.current) return;
-    lastSdkLenRef.current = sdkMessages.length;
-    if (drainingRef.current) {
-      return;
-    }
-    void refreshThread();
-  }, [sdkMessages.length, refreshThread]);
 
   const loadSession = useCallback(async () => {
     if (!sessionId) return;
@@ -438,12 +444,8 @@ export default function SessionThreadView() {
         const s = await getSession(sessionId);
         if (cancelled) return;
         setSession(s);
-        // Also refresh messages so the thread catches up if the harness was
-        // still generating when the user navigated away and came back. The
-        // drain guard prevents clobbering an active local stream.
-        if (s.status === "ready" && !drainingRef.current) {
-          await refreshThread();
-        }
+        // Status only. The thread is driven by the SDK stream (live turns) and
+        // the one-time load on mount — we don't re-pull the whole session here.
       } catch {
         // silent
       }
@@ -453,7 +455,7 @@ export default function SessionThreadView() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [sessionId, refreshThread]);
+  }, [sessionId]);
 
   // First load on a session URL: jump straight to the latest turn so the
   // user lands at the live end of the conversation (matches Slack, iMessage,
@@ -741,6 +743,7 @@ export default function SessionThreadView() {
         agent={agent}
         agentName={currentAgentName}
         messages={messages}
+        liveTurns={liveTurns}
         loading={loading}
         error={error}
         setError={setError}
@@ -786,6 +789,7 @@ interface MainPanelProps {
   agent: AgentRow | null;
   agentName: string;
   messages: LocalMessage[];
+  liveTurns: LocalMessage[];
   loading: boolean;
   error: string | null;
   setError: (s: string | null) => void;
@@ -813,6 +817,7 @@ function MainPanel({
   agent,
   agentName,
   messages,
+  liveTurns,
   loading,
   error,
   setError,
@@ -1129,6 +1134,21 @@ function MainPanel({
               }
             />
           ))}
+
+          {/*
+            Live turns streamed straight from the harness SDK bus (Slack /
+            webhook turns). Appended as frames arrive — each assistant segment
+            is its own block so steps accumulate instead of overwriting. Shown
+            only while awaiting a reply (last thread entry is the user) and no
+            local send is in flight; the local-send path renders its own
+            optimistic message.
+          */}
+          {!hasInProgress &&
+            (messages.length === 0 ||
+              messages[messages.length - 1].role === "user") &&
+            liveTurns.map((m) => (
+              <MessageBlock key={m.id} msg={m} isFirstUser={false} />
+            ))}
 
           {/*
             Vault interceptions live in the top-level Vault side panel —
@@ -1676,6 +1696,36 @@ function AssistantBlock({ msg }: { msg: LocalMessage }) {
 type AssistantSegment =
   | { kind: "part"; part: HarnessMessagePart }
   | { kind: "tools"; parts: HarnessMessagePart[] };
+
+// Map a folded SDK assistant message's content blocks to the harness part
+// shape the thread already renders (text / thinking / tool). Lets the live
+// stream reuse AssistantBlock instead of a second renderer.
+function foldedAssistantToParts(
+  content: Array<{ type: string; [k: string]: unknown }>,
+): HarnessMessagePart[] {
+  const parts: HarnessMessagePart[] = [];
+  for (const b of content) {
+    // Partial-stream folds can leave sparse/holey content arrays — skip any
+    // slot that isn't a populated block before reading `.type`.
+    if (!b || typeof b !== "object") continue;
+    if (b.type === "text" && typeof b.text === "string" && b.text) {
+      parts.push({ type: "text", text: b.text });
+    } else if (
+      b.type === "thinking" &&
+      typeof b.thinking === "string" &&
+      b.thinking
+    ) {
+      parts.push({ type: "thinking", text: b.thinking });
+    } else if (b.type === "tool_use") {
+      parts.push({
+        type: "tool",
+        tool: typeof b.name === "string" ? b.name : "tool",
+        state: { status: "running", input: b.input ?? b.input_partial_json },
+      });
+    }
+  }
+  return parts;
+}
 
 function segmentParts(parts: HarnessMessagePart[]): AssistantSegment[] {
   const segments: AssistantSegment[] = [];
