@@ -544,7 +544,8 @@ function extractReplText(data) {
 }
 
 // REPL mode for JSON-API harnesses (claude-agent-sdk, opencode).
-// Sends lines via POST /sessions/:id/message and prints the response.
+// Sends each line through LAP's opencode proxy
+// (POST /sessions/:id/opencode/session/:ocid/message) and prints the reply.
 function attachRepl(cfg, sid) {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
@@ -557,6 +558,22 @@ function attachRepl(cfg, sid) {
     rl.prompt();
 
     let busy = false;
+    // opencode session id, resolved once from the LAP session row. The CLI
+    // talks to the harness through LAP's opencode proxy, same as the UI.
+    let ocid = null;
+    const resolveOcid = async () => {
+      if (ocid) return ocid;
+      const r = await fetch(`${cfg.base}/api/v1/managed_agents/sessions/${sid}`, {
+        headers: { authorization: `Bearer ${cfg.key}` },
+      });
+      if (!r.ok) throw new Error(`session lookup failed: ${r.status}`);
+      const s = await r.json();
+      if (!s.harness_session_id) {
+        throw new Error("session has no harness_session_id yet");
+      }
+      ocid = s.harness_session_id;
+      return ocid;
+    };
     rl.on("line", (line) => {
       const text = line.trim();
       if (!text) { rl.prompt(); return; }
@@ -565,13 +582,14 @@ function attachRepl(cfg, sid) {
       (async () => {
         process.stdout.write(`  ${ansi.dim("…")}\r`);
         try {
-          const r = await fetch(`${cfg.base}/api/v1/managed_agents/sessions/${sid}/message`, {
+          const id = await resolveOcid();
+          const r = await fetch(`${cfg.base}/api/v1/managed_agents/sessions/${sid}/opencode/session/${id}/message`, {
             method: "POST",
             headers: {
               "authorization": `Bearer ${cfg.key}`,
               "content-type": "application/json",
             },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify({ parts: [{ type: "text", text }] }),
           });
           readline.clearLine(process.stdout, 0);
           readline.cursorTo(process.stdout, 0);
