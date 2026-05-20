@@ -66,9 +66,7 @@ const CLAUDE_BIN = resolveClaudeBinary();
 // In-process MCP server exposing save_memory + search_memory to the model.
 // Returns null when LAP_BASE_URL/AGENT_ID/LAP_AUTH_TOKEN aren't all set, so
 // local dev without the platform reachable still works (tools just absent).
-const MEMORY_MCP = buildMemoryMcpServer({
-  onPreviewPortRegistered: (port) => allowedProxyPorts.add(String(port)),
-});
+const MEMORY_MCP = buildMemoryMcpServer();
 const SCREENSHOT_MCP = buildScreenshotMcpServer();
 
 // ---------------------------------------------------------------------------
@@ -80,16 +78,6 @@ const REPO_DIR = process.env.REPO_DIR ?? "/work/repo";
 const DEFAULT_MODEL =
   process.env.LITELLM_DEFAULT_MODEL ?? "claude-haiku-4-5";
 
-// Ports the proxy is allowed to forward to. Seeded from PREVIEW_PORT or the
-// comma-separated PREVIEW_PORTS env vars set by the agent template, and
-// extended at runtime when the agent calls report_preview_url. Empty = no port
-// is allowed (fail-closed); the proxy only opens once a port is registered.
-const allowedProxyPorts: Set<string> = new Set(
-  (process.env.PREVIEW_PORTS ?? process.env.PREVIEW_PORT ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean),
-);
 const SYSTEM_PROMPT = process.env.AGENT_PROMPT ?? "";
 
 // Route the SDK through the LiteLLM gateway. The SDK reads ANTHROPIC_BASE_URL
@@ -737,39 +725,6 @@ app.get("/event", (c) =>
       globalBusSubscribers.delete(cb);
     }
   }),
-);
-
-// ---------------------------------------------------------------------------
-// Preview proxy — forward /proxy/:port/* to localhost:<port> inside container
-// ---------------------------------------------------------------------------
-
-app.all("/proxy/:port/*", async (c) => {
-  const port = c.req.param("port");
-  if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
-    return c.text("invalid port", 400);
-  }
-  if (!allowedProxyPorts.has(port)) {
-    return c.text("port not in allowlist", 403);
-  }
-  const url = new URL(c.req.url);
-  const rest = url.pathname.replace(`/proxy/${port}`, "") || "/";
-  const target = `http://localhost:${port}${rest}${url.search}`;
-  const headers = new Headers(c.req.raw.headers);
-  headers.delete("host");
-  try {
-    const resp = await fetch(target, {
-      method: c.req.method,
-      headers,
-      body: ["GET", "HEAD"].includes(c.req.method) ? undefined : c.req.raw.body,
-    });
-    return new Response(resp.body, { status: resp.status, headers: resp.headers });
-  } catch (e) {
-    return c.text(`proxy error: ${e instanceof Error ? e.message : String(e)}`, 502);
-  }
-});
-
-app.all("/proxy/:port", (c) =>
-  c.redirect(`/proxy/${c.req.param("port")}/`, 301),
 );
 
 // ---------------------------------------------------------------------------
