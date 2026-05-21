@@ -307,7 +307,19 @@ async function runTurn(
     // events yet, so the loop just parks indefinitely. Disable the tool so the
     // model has to make its best judgment and proceed. Revisit when both
     // surfaces render answerable question cards.
-    disallowedTools: ["AskUserQuestion"],
+    //
+    // Sandbox mode additionally blocks all built-in file/shell tools so the
+    // model is forced to use provision/execute for any code execution.
+    // allowedTools alone is insufficient under bypassPermissions — disallowedTools
+    // is enforced regardless of permission mode.
+    disallowedTools: [
+      "AskUserQuestion",
+      ...(s.sandbox_tools ? [
+        "Bash", "Read", "Write", "Edit", "MultiEdit",
+        "Glob", "Grep", "LS", "NotebookRead", "NotebookEdit",
+        "TodoRead", "TodoWrite", "Task",
+      ] : []),
+    ],
     ...(CLAUDE_BIN ? { pathToClaudeCodeExecutable: CLAUDE_BIN } : {}),
     ...(s.sandbox_tools
       ? {
