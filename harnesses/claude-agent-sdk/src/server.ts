@@ -305,6 +305,7 @@ async function runTurn(
     currentSdkMsgId: null,
     blockIdxsBySdkMsgId: new Map(),
     thinkingAccum: new Map(),
+    asstBlockCount: new Map(),
   };
 
   try {
@@ -411,6 +412,11 @@ interface TurnStreamState {
   // `assistant` event delivers block.thinking="" when the SDK doesn't
   // re-aggregate streaming thinking_delta events; we fall back to this map.
   thinkingAccum: Map<string, string>;
+  // Per-SDK-message running count of assistant-event blocks. The SDK emits
+  // `assistant` events incrementally — one content block each, always at
+  // content-index 0 — so we accumulate the real block index here to build a
+  // stable, unique partID that matches the streamed deltas (b0, b1, b2, …).
+  asstBlockCount: Map<string, number>;
 }
 
 function handleSdkEvent(
@@ -454,17 +460,18 @@ function handleSdkEvent(
     emit(s, "session.connected", {});
   } else if (ev.type === "assistant" && ev.message) {
     const content = ev.message.content ?? [];
-    // Look up the globalIdxs the stream_event side already allocated for
-    // this SDK message's blocks. Falls back to allocating fresh ones if
-    // the assistant event arrived without matching stream events (e.g.
-    // includePartialMessages off, or future SDK behavior change).
     const sdkMsgId: string | undefined = ev.message.id;
-    const idxs = (sdkMsgId ? turn.blockIdxsBySdkMsgId.get(sdkMsgId) : undefined) ?? [];
+    // The SDK delivers `assistant` events incrementally — one content block at
+    // a time, always at content-index 0 — so the raw `idx` collides on b0 for
+    // reasoning/text/tool. Accumulate a running block count per SDK message so
+    // each part gets a unique, stream-aligned partID.
+    const seenBlocks = turn.asstBlockCount.get(sdkMsgId ?? "") ?? 0;
     content.forEach((block: { type: string; text?: string; thinking?: string; name?: string; id?: string; input?: unknown }, idx: number) => {
-      // Stable per-block id. Pairs this authoritative update with any deltas
-      // the UI already accumulated under the same partID.
-      const globalIdx = idxs[idx] ?? turn.nextGlobalIdx++;
-      const partId = `${msgId}_b${globalIdx}`;
+      // Real block index = accumulated count + position in this event. Unique
+      // per block and aligned with the streamed delta partIDs (b0, b1, b2…) so
+      // reasoning/text/tool never collide and overwrite each other.
+      const blockIdx = seenBlocks + idx;
+      const partId = `${sdkMsgId ?? msgId}_b${blockIdx}`;
       if (block.type === "text") {
         const part: PlatformPart = {
           id: partId,
@@ -480,7 +487,7 @@ function handleSdkEvent(
         // The SDK doesn't always re-aggregate streaming thinking_delta events
         // into the final assistant message — fall back to what we accumulated
         // from the stream so the history entry has the full reasoning text.
-        const thinkingKey = `${sdkMsgId}:${idx}`;
+        const thinkingKey = `${sdkMsgId}:${blockIdx}`;
         const streamAccum = turn.thinkingAccum.get(thinkingKey) ?? "";
         const part: PlatformPart = {
           id: partId,
@@ -503,6 +510,7 @@ function handleSdkEvent(
         emit(s, "message.part.updated", { messageID: msgId, part });
       }
     });
+    turn.asstBlockCount.set(sdkMsgId ?? "", seenBlocks + content.length);
   } else if (ev.type === "user" && ev.message) {
     // Tool results come back as `user` messages with `tool_result` blocks;
     // attach the output to the matching tool part so the UI can show it.
@@ -575,10 +583,9 @@ function handleSdkEvent(
       typeof inner.index === "number" &&
       turn.currentSdkMsgId
     ) {
-      const arr = turn.blockIdxsBySdkMsgId.get(turn.currentSdkMsgId);
-      const globalIdx = arr ? arr[inner.index] : undefined;
-      if (globalIdx === undefined) return;
-      const partID = `${msgId}_b${globalIdx}`;
+      // Same (SDK message id, block index) key as the assistant-event update
+      // above, so streamed deltas land on the same part and never collide.
+      const partID = `${turn.currentSdkMsgId}_b${inner.index}`;
       if (
         inner.delta?.type === "text_delta" &&
         typeof inner.delta.text === "string"
