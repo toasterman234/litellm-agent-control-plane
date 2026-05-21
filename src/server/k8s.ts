@@ -1333,6 +1333,34 @@ export async function createInlineHarnessDeployment(image: string): Promise<void
   const port = env.CONTAINER_PORT;
   const labels = { app: INLINE_HARNESS_NAME };
 
+  // Matches the session-sandbox security model: LITELLM_API_KEY is never in
+  // the harness container env. Vault sidecar holds REAL_LITELLM_API_KEY and
+  // swaps it at egress via HTTPS_PROXY. Harness only ever sees the stub.
+  const harnessEnv: Array<{ name: string; value: string }> = [
+    { name: "PORT", value: String(port) },
+    { name: "SANDBOX_TOOLS", value: "true" },
+    { name: "LITELLM_API_BASE", value: env.LITELLM_API_BASE },
+    { name: "LAP_BASE_URL", value: env.LAP_BASE_URL },
+    { name: "PLATFORM_INTERNAL_URL", value: env.PLATFORM_INTERNAL_URL },
+    // Route all HTTPS through the in-pod vault sidecar (same as session sandboxes).
+    { name: "HTTPS_PROXY", value: "http://127.0.0.1:14322" },
+    { name: "HTTP_PROXY",  value: "http://127.0.0.1:14322" },
+    { name: "NO_PROXY", value: "localhost,127.0.0.1,.svc.cluster.local,.svc,.cluster.local" },
+    { name: "NODE_EXTRA_CA_CERTS", value: "/etc/vault-ca/tls.crt" },
+    { name: "SSL_CERT_FILE",        value: "/etc/vault-ca/tls.crt" },
+    { name: "REQUESTS_CA_BUNDLE",   value: "/etc/vault-ca/tls.crt" },
+    { name: "CURL_CA_BUNDLE",       value: "/etc/vault-ca/tls.crt" },
+    { name: "GIT_SSL_CAINFO",       value: "/etc/vault-ca/tls.crt" },
+    { name: "VAULT_ENABLED", value: "true" },
+  ];
+
+  // Vault sidecar: holds the real secrets and writes stubs to /lap-shared/env.
+  // No per-session LAP tokens needed — this is a shared platform service.
+  const vaultEnv: Array<{ name: string; value: string }> = [
+    { name: "MASTER_KEY",           value: env.MASTER_KEY },
+    { name: "REAL_LITELLM_API_KEY", value: env.LITELLM_API_KEY },
+  ];
+
   const deployment: k8s.V1Deployment = {
     apiVersion: "apps/v1",
     kind: "Deployment",
@@ -1349,19 +1377,34 @@ export async function createInlineHarnessDeployment(image: string): Promise<void
               image,
               imagePullPolicy: env.K8S_IMAGE_PULL_POLICY,
               ports: [{ containerPort: port, protocol: "TCP" }],
-              env: [
-                { name: "PORT", value: String(port) },
-                { name: "SANDBOX_TOOLS", value: "true" },
-                { name: "LITELLM_API_BASE", value: env.LITELLM_API_BASE },
-                { name: "LITELLM_API_KEY", value: env.LITELLM_API_KEY },
-                { name: "LAP_BASE_URL", value: env.LAP_BASE_URL },
-                { name: "PLATFORM_INTERNAL_URL", value: env.PLATFORM_INTERNAL_URL },
+              env: harnessEnv,
+              volumeMounts: [
+                { name: "lap-shared", mountPath: "/lap-shared", readOnly: true },
+                { name: "vault-ca",   mountPath: "/etc/vault-ca", readOnly: true },
               ],
               resources: {
                 requests: { cpu: "100m", memory: "256Mi" },
                 limits: { cpu: "500m", memory: "512Mi" },
               },
             },
+            {
+              name: "vault",
+              image: env.K8S_VAULT_IMAGE,
+              imagePullPolicy: env.K8S_IMAGE_PULL_POLICY,
+              env: vaultEnv,
+              volumeMounts: [
+                { name: "lap-shared", mountPath: "/lap-shared" },
+                { name: "vault-ca",   mountPath: "/etc/vault-ca", readOnly: true },
+              ],
+              resources: {
+                requests: { cpu: "20m",  memory: "80Mi"  },
+                limits:   { cpu: "200m", memory: "256Mi" },
+              },
+            },
+          ],
+          volumes: [
+            { name: "lap-shared", emptyDir: { medium: "Memory" } },
+            { name: "vault-ca",   secret: { secretName: "vault-ca" } },
           ],
         },
       },
@@ -1394,7 +1437,8 @@ export async function createInlineHarnessDeployment(image: string): Promise<void
 
 export async function deleteInlineHarnessDeployment(): Promise<void> {
   const ns = env.K8S_NAMESPACE;
-  await Promise.allSettled([
+  // Promise.all (not allSettled) so non-404 K8s errors propagate to the caller.
+  await Promise.all([
     appsV1Api()
       .deleteNamespacedDeployment({ name: INLINE_HARNESS_NAME, namespace: ns })
       .catch((err: unknown) => { if (!isNotFound(err)) throw err; }),
