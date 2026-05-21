@@ -1339,6 +1339,10 @@ export async function createInlineHarnessDeployment(image: string): Promise<void
   const harnessEnv: Array<{ name: string; value: string }> = [
     { name: "PORT", value: String(port) },
     { name: "SANDBOX_TOOLS", value: "true" },
+    // Inline harness is shared; each session passes its own model at message
+    // time. This placeholder satisfies the entrypoint check in older images
+    // and sets the server.ts fallback to a sensible value.
+    { name: "LITELLM_DEFAULT_MODEL", value: "anthropic/claude-sonnet-4-6" },
     { name: "LITELLM_API_BASE", value: env.LITELLM_API_BASE },
     { name: "LAP_BASE_URL", value: env.LAP_BASE_URL },
     { name: "PLATFORM_INTERNAL_URL", value: env.PLATFORM_INTERNAL_URL },

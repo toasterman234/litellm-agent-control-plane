@@ -6,7 +6,9 @@ set -euo pipefail
 
 . /opt/lap/common.sh
 
-: "${LITELLM_DEFAULT_MODEL:?LITELLM_DEFAULT_MODEL required}"
+# LITELLM_DEFAULT_MODEL is optional: server.ts falls back to "claude-haiku-4-5"
+# if unset. The inline harness (shared deployment) omits it intentionally since
+# each session passes its own model at message time.
 
 # Hydrate attached skills as ~/.claude/skills/<slug>/SKILL.md so the SDK's
 # in-sandbox `claude` binary (and any future file-based skill consumer)

@@ -63,6 +63,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
+  # Deployments — required by createInlineHarnessDeployment /
+  # deleteInlineHarnessDeployment in src/server/k8s.ts. Without this the
+  # admin "Enable" toggle returns 403 and the inline harness can never start.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "delete", "patch", "update"]
 
 ---
 # Bind the Role to the ServiceAccount.
