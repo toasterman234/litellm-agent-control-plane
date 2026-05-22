@@ -47,6 +47,15 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
   if (agent === null) httpError(404, `agent '${agent_id}' not found`);
 
   const enabled = body.enabled ?? true;
+  // Only schedule a fire when enabled; a disabled row sits with a null
+  // next_run_at and is skipped by the worker until it's turned on.
+  const nextRunAt = enabled ? computeNextRunAt(body.cron_expr) : null;
+  // A cron can be syntactically valid yet never occur (e.g. "0 9 31 2 *" —
+  // Feb 31). Reject up front so the user gets feedback instead of an
+  // automation that shows "Enabled" but never fires.
+  if (enabled && nextRunAt === null) {
+    httpError(422, "cron expression has no future occurrences");
+  }
   const created = await prisma.automation.create({
     data: {
       agent_id,
@@ -54,9 +63,7 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
       cron_expr: body.cron_expr,
       name: body.name ?? null,
       enabled,
-      // Only schedule a fire when enabled; a disabled row sits with a null
-      // next_run_at and is skipped by the worker until it's turned on.
-      next_run_at: enabled ? computeNextRunAt(body.cron_expr) : null,
+      next_run_at: nextRunAt,
       created_by: identity.user_id,
     },
   });
