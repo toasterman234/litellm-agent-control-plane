@@ -114,6 +114,13 @@ spec:
             - name: AWS_REGION
               value: "us-east-1"
 
+            # In-cluster address of the web Service. The worker calls the
+            # session-create API here when firing automations; without it the
+            # worker would hit localhost (no server in this pod) and every run
+            # fails with "fetch failed". Service litellm-web exposes port 80.
+            - name: BASE_URL
+              value: "http://litellm-web"
+
             - name: K8S_NODE_HOST
               value: "auto"
 

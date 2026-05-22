@@ -79,8 +79,17 @@ const RUN_TIMEOUT_MS = 60 * 60 * 1000;
  * duplicated here. Returns the spawned session id.
  */
 async function spawnAutomationSession(auto: DueAutomationRow): Promise<string> {
-  const baseUrl = process.env.BASE_URL ?? "http://localhost:3000";
-  const url = `${baseUrl}/api/v1/managed_agents/agents/${encodeURIComponent(
+  // The worker runs in its own pod — `localhost` is NOT the web server there.
+  // Resolve a reachable base URL: explicit BASE_URL, else the cluster-internal
+  // Service DNS (PLATFORM_INTERNAL_URL), else the external URL, else localhost
+  // for single-process local dev. Without this the worker fetches
+  // localhost:3000, gets ECONNREFUSED, and every run fails with "fetch failed".
+  const baseUrl =
+    process.env.BASE_URL ||
+    env.PLATFORM_INTERNAL_URL ||
+    env.LAP_BASE_URL ||
+    "http://localhost:3000";
+  const url = `${baseUrl.replace(/\/+$/, "")}/api/v1/managed_agents/agents/${encodeURIComponent(
     auto.agent_id,
   )}/session`;
   const res = await fetch(url, {
