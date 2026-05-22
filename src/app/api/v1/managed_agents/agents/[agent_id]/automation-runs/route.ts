@@ -40,6 +40,6 @@ export const GET = wrap<RouteContext>(async (req, ctx) => {
     include: { automation: { select: { name: true } } },
   });
   return Response.json(
-    rows.map((r) => toApiAutomationRun(r, r.automation?.name ?? null)),
+    rows.map((r) => toApiAutomationRun(r, { name: r.automation?.name ?? null })),
   );
 });
