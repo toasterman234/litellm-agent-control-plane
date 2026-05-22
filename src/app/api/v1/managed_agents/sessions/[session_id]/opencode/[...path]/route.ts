@@ -23,6 +23,7 @@
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
 import { getCachedSession, type SessionCacheEntry } from "@/server/sessionCache";
+import { markUserMessageFailed } from "@/server/sessionStore";
 import {
   recordUserSend,
   watchEventStreamAndSnapshot,
@@ -117,15 +118,29 @@ async function proxy(req: Request, ctx: RouteContext): Promise<Response> {
     // that dies mid-turn still leaves it recoverable + visible in the Session
     // Log. The UI never hits our /message route — this proxy is the only place
     // the send is observable. Awaited (one small insert) for durable-before-send.
+    let sentUserMsgId: string | null = null;
     if (req.method === "POST" && SEND_PATH.test(tail) && bodyBuf) {
-      await recordUserSend({
+      sentUserMsgId = await recordUserSend({
         session_id,
         harness_session_id: cached.harness_session_id,
         body: bodyBuf,
       });
     }
 
-    const upstream = await fetch(target, init);
+    let upstream: Response;
+    try {
+      upstream = await fetch(target, init);
+    } catch (err) {
+      // Harness unreachable — flag the just-recorded user turn `failed` so it
+      // isn't replayed as a phantom unanswered turn on the next recovery.
+      if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
+      throw err;
+    }
+    // Non-2xx from the harness (rate limit, bad request, …): same cleanup. The
+    // error status is still proxied back to the client below.
+    if (sentUserMsgId && !upstream.ok) {
+      await markUserMessageFailed(sentUserMsgId);
+    }
 
     const ct = upstream.headers.get("content-type") ?? "application/json";
     const outHeaders: Record<string, string> = { "content-type": ct };
