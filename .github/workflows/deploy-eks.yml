@@ -370,6 +370,38 @@ jobs:
           docker tag "$IMG" "$LATEST" && docker push "$LATEST"
           echo "image=$IMG" >> "$GITHUB_OUTPUT"
 
+      - name: Build & push executor harness
+        id: harness-executor
+        env:
+          REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/litellm-agent-platform
+          SHA: ${{ github.sha }}
+        run: |
+          IMG="${REGISTRY}:executor-${SHA}"
+          LATEST="${REGISTRY}:executor-latest"
+          DOCKERFILE="harnesses/executor/Dockerfile"
+          BEFORE="${{ github.event.before }}"
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE" ]; then
+            changed=yes
+          else
+            changed=$(git diff --name-only "$BEFORE" HEAD -- harnesses/executor/ harnesses/_shared/ || echo changed)
+          fi
+          if [ -n "$changed" ]; then
+            echo "executor changed — building"
+            docker buildx build -f "$DOCKERFILE" -t "$IMG" .
+            docker push "$IMG"
+          else
+            echo "executor unchanged — retagging"
+            if docker pull "$LATEST" 2>/dev/null; then
+              docker tag "$LATEST" "$IMG" && docker push "$IMG"
+            else
+              echo "executor: :latest not in ECR — building"
+              docker buildx build -f "$DOCKERFILE" -t "$IMG" .
+              docker push "$IMG"
+            fi
+          fi
+          docker tag "$IMG" "$LATEST" && docker push "$LATEST"
+          echo "image=$IMG" >> "$GITHUB_OUTPUT"
+
   # ── Job 2: Roll out the new image to EKS deployments ──────────────────────
   deploy:
     name: Deploy to EKS
@@ -443,23 +475,22 @@ jobs:
           CX="${REGISTRY}:harness-codex-${SHA}"
           HM="${REGISTRY}:harness-hermes-${SHA}"
           GM="${REGISTRY}:harness-gemini-${SHA}"
+          EX="${REGISTRY}:executor-${SHA}"
           CC_B64=$(printf '%s' "$CC" | base64 | tr -d '\n')
           SDK_B64=$(printf '%s' "$SDK" | base64 | tr -d '\n')
           OC_B64=$(printf '%s' "$OC" | base64 | tr -d '\n')
           CX_B64=$(printf '%s' "$CX" | base64 | tr -d '\n')
           HM_B64=$(printf '%s' "$HM" | base64 | tr -d '\n')
           GM_B64=$(printf '%s' "$GM" | base64 | tr -d '\n')
-          # JSON Patch `add` both creates and overwrites (RFC 6902 §4.1).
-          # `replace` would fail with "object not found" on the first deploy
-          # that introduces a new harness key (e.g. CODEX/HERMES) before the
-          # secret has it.
+          EX_B64=$(printf '%s' "$EX" | base64 | tr -d '\n')
           kubectl patch secret litellm-env -n default --type=json -p="[
             {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_CLAUDE_CODE\",\"value\":\"$CC_B64\"},
             {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_CLAUDE_SDK\",\"value\":\"$SDK_B64\"},
             {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_OPENCODE\",\"value\":\"$OC_B64\"},
             {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_CODEX\",\"value\":\"$CX_B64\"},
             {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_HERMES\",\"value\":\"$HM_B64\"},
-            {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_GEMINI\",\"value\":\"$GM_B64\"}
+            {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_GEMINI\",\"value\":\"$GM_B64\"},
+            {\"op\":\"add\",\"path\":\"/data/K8S_HARNESS_IMAGE_EXECUTOR\",\"value\":\"$EX_B64\"}
           ]"
 
       - name: Run DB migrations
