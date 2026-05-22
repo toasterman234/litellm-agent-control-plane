@@ -440,10 +440,31 @@ async function finishBringUp(
 // rejection here would be unhandled (the caller doesn't await this).
 // ---------------------------------------------------------------------------
 
-// last_seen_at heartbeat cadence while the initial agent task runs. Must stay
+// last_seen_at heartbeat cadence while an initial agent task runs. Must stay
 // comfortably below SESSION_IDLE_TIMEOUT_MS (reconcile.ts) so an in-flight turn
 // is never mistaken for an idle session by the reconciler.
 const INITIAL_TASK_HEARTBEAT_MS = 60_000;
+
+// Keep last_seen_at fresh while a long-running initial agent task is in flight.
+// Without this, last_seen_at stays pinned at session-creation time and the idle
+// reaper kills the session mid-task — even though the agent is actively working.
+// Used by both the per-session-task path (runInitialPrompt) and the brain-inline
+// path, which each fire the first turn as a fire-and-forget harnessSendMessage.
+// Returns a stop function to call once the turn settles. The timer is unref'd so
+// it can never keep the process alive on its own.
+function startLastSeenHeartbeat(session_id: string): () => void {
+  const timer: NodeJS.Timeout = setInterval(() => {
+    void prisma.session
+      .update({ where: { session_id }, data: { last_seen_at: new Date() } })
+      .catch((err) => {
+        console.warn(
+          `last_seen_at heartbeat failed for ${session_id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }, INITIAL_TASK_HEARTBEAT_MS);
+  if (typeof timer.unref === "function") timer.unref();
+  return () => clearInterval(timer);
+}
 
 async function runInitialPrompt(
   agent: AgentRow,
@@ -453,22 +474,7 @@ async function runInitialPrompt(
   initial_prompt: string,
   initial_attachments?: InitialAttachment[],
 ): Promise<void> {
-  // Keep last_seen_at fresh while the (2-15 min) initial agent task runs.
-  // Without this, last_seen_at stays pinned at session-creation time and the
-  // idle reaper (see SESSION_IDLE_TIMEOUT_MS in reconcile.ts) kills the session
-  // mid-task — even though the agent is actively working. The timer is unref'd
-  // so it can never keep the process alive on its own.
-  const heartbeat: NodeJS.Timeout = setInterval(() => {
-    void prisma.session
-      .update({ where: { session_id }, data: { last_seen_at: new Date() } })
-      .catch((err) => {
-        console.warn(
-          `initial_prompt heartbeat failed for ${session_id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-  }, INITIAL_TASK_HEARTBEAT_MS);
-  // Don't keep the event loop alive solely for this timer.
-  if (typeof heartbeat.unref === "function") heartbeat.unref();
+  const stopHeartbeat = startLastSeenHeartbeat(session_id);
 
   try {
     // Build Claude-format multimodal parts when attachments are present.
@@ -522,7 +528,7 @@ async function runInitialPrompt(
         );
       });
   } finally {
-    clearInterval(heartbeat);
+    stopHeartbeat();
   }
 }
 
@@ -639,14 +645,20 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
     });
 
     if (body.initial_prompt) {
+      // Same idle-reaper guard as runInitialPrompt: brain-inline fires the
+      // first turn fire-and-forget, so keep last_seen_at fresh until it settles
+      // or the reconciler will reap the session mid-task.
+      const stopHeartbeat = startLastSeenHeartbeat(session.session_id);
       void harnessSendMessage({
         sandbox_url: inlineUrl,
         harness_session_id,
         model: agent.model,
         parts: expandMessage(body.initial_prompt),
-      }).catch((err: unknown) => {
-        console.error(`brain-inline initial_prompt failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+      })
+        .catch((err: unknown) => {
+          console.error(`brain-inline initial_prompt failed: ${err instanceof Error ? err.message : String(err)}`);
+        })
+        .finally(() => stopHeartbeat());
     }
 
     const updatedSession = await prisma.session.findUniqueOrThrow({ where: { session_id: session.session_id } });
