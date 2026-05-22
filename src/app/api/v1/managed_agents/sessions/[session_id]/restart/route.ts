@@ -26,18 +26,11 @@
 
 import { ZodError } from "zod";
 
-import type { Prisma } from "@prisma/client";
-
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
-import {
-  inlineHarnessUrl,
-  runTask,
-  stopTask,
-  waitHttpReady,
-  waitRunningGetUrl,
-} from "@/server/k8s";
+import { inlineHarnessUrl } from "@/server/k8s";
 import { env } from "@/server/env";
+import { rehydrateSession } from "@/server/rehydrate";
 import { invalidateSession, putCachedSession } from "@/server/sessionCache";
 import {
   expandMessage,
@@ -52,7 +45,6 @@ import {
   httpError,
   toApiSession,
   type HarnessMessage,
-  type HarnessMessageResponse,
 } from "@/server/types";
 
 export const runtime = "nodejs";
@@ -96,7 +88,7 @@ export async function POST(req: Request, ctx: RouteContext) {
         process.env.CLAUDE_CODE_INLINE_URL ||
         (env.IN_CLUSTER ? inlineHarnessUrl() : null);
       if (!inlineUrl) {
-        const updated = await prisma.session.update({
+        await prisma.session.update({
           where: { session_id },
           data: { status: "failed", failure_reason: "CLAUDE_CODE_INLINE_URL not configured" },
         });
@@ -159,125 +151,28 @@ export async function POST(req: Request, ctx: RouteContext) {
       return Response.json(toApiSession(updated, null, null, agent.harness_id));
     }
 
-    // Best-effort: try to stop the old task before we forget its ARN. If it's
-    // already stopped or the call fails for any reason, swallow — leaving an
-    // orphaned task is cheap (the reconciler kills untagged/dead-row tasks)
-    // compared to blocking the user-visible restart on it.
-    if (row.task_arn) {
-      try {
-        await stopTask(row.task_arn, "session restart");
-      } catch (err) {
-        console.warn(
-          `restart: stopTask(${row.task_arn}) failed for session ${session_id}:`,
-          err,
-        );
-      }
-    }
-
-    // Flip to `creating` up front so concurrent restart calls land on the
-    // 409 above, and so an in-flight crash leaves an auditable `creating ->
-    // failed` transition rather than a phantom `ready` row.
-    await prisma.session.update({
-      where: { session_id },
-      data: {
-        status: "creating",
-        sandbox_url: null,
-        harness_session_id: null,
-        task_arn: null,
-        failure_reason: null,
-        last_seen_at: new Date(),
-      },
-    });
-    // Drop the hot-path cache so any in-flight message routed at the old
-    // sandbox_url falls through to the 404 path instead of dialing a stopped
-    // pod. The new entry is re-installed below once the restart succeeds.
-    invalidateSession(session_id);
-
-    let new_task_arn: string | null = null;
+    // Bring up a fresh sandbox and replay the thread into it. rehydrateSession
+    // owns the full dance — stop old task, flip `creating`, invalidate cache,
+    // runTask/local bring-up, harness session, replay (durable log first,
+    // history blob fallback), `ready` flip, cache warm — and marks the row
+    // `failed` + stops the new task on error. Shared with the message route's
+    // auto-recovery so both paths behave identically.
     try {
-      const { task_arn } = await runTask({ agent, session_id });
-      new_task_arn = task_arn;
-      await prisma.session.update({
-        where: { session_id },
-        data: { task_arn },
-      });
-
-      const sandbox_url = await waitRunningGetUrl(task_arn, agent);
-      await prisma.session.update({
-        where: { session_id },
-        data: { sandbox_url },
-      });
-      await waitHttpReady(sandbox_url);
-
-      const rawFiles = (agent as Record<string, unknown>).sandbox_files;
-      const harness_session_id = await harnessCreateSession({
-        sandbox_url,
-        title: "restart",
-        files: Array.isArray(rawFiles) ? (rawFiles as import("@/server/types").SandboxFileSpec[]) : undefined,
-      });
-      await prisma.session.update({
-        where: { session_id },
-        data: { harness_session_id },
-      });
-
-      let response: HarnessMessageResponse | null = null;
-      if (previousHistory && previousHistory.length > 0) {
-        const historyText = formatHistoryAsText(previousHistory);
-        response = await harnessSendMessage({
-          sandbox_url,
-          harness_session_id,
-          model: agent.model,
-          parts: expandMessage(historyText),
-        });
-      }
-
-      const updated = await prisma.session.update({
-        where: { session_id },
-        data: {
-          status: "ready",
-          // Reset the idle clock at ready-transition: the reconciler should
-          // grant a freshly-restarted session a full idle window even if the
-          // pre-restart row was about to be reaped.
-          last_seen_at: new Date(),
-          // Skip the `response` column entirely if no history was replayed,
-          // matching the create-session route's handling of `initial_prompt`.
-          response: response
-            ? (response as unknown as Prisma.InputJsonValue)
-            : undefined,
-        },
-      });
-      // Re-warm the cache with the post-restart state so the first message
-      // after restart skips DB hydration.
-      putCachedSession({
+      const { response } = await rehydrateSession({
+        agent,
         session_id,
-        agent_id: agent.agent_id,
-        agent_model: agent.model,
-        harness_id: agent.harness_id,
-        sandbox_url,
-        harness_session_id,
-        status: "ready",
-        sandboxes: null,
+        oldTaskArn: row.task_arn,
+        previousHistory,
       });
-
-      return Response.json(toApiSession(updated, response, null, agent.harness_id));
+      const updated = await prisma.session.findUniqueOrThrow({
+        where: { session_id },
+      });
+      return Response.json(
+        toApiSession(updated, response, null, agent.harness_id),
+      );
     } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      // Mark failed before attempting cleanup so the row reflects the error
-      // even if stopTask itself throws.
-      await prisma.session
-        .update({
-          where: { session_id },
-          data: { status: "failed", failure_reason: reason },
-        })
-        .catch(() => {
-          /* best-effort; surface the original failure */
-        });
-      if (new_task_arn) {
-        await stopTask(new_task_arn, "restart failed").catch(() => {
-          /* best-effort */
-        });
-      }
       if (e instanceof HttpError || e instanceof Response) throw e;
+      const reason = e instanceof Error ? e.message : String(e);
       throw new HttpError(502, `session restart failed: ${reason}`);
     }
   } catch (e) {
