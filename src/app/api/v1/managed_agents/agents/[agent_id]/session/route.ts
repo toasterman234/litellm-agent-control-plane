@@ -38,6 +38,10 @@ import {
 } from "@/server/k8s";
 import { putCachedSession } from "@/server/sessionCache";
 import {
+  appendUserMessage,
+  completeAssistantMessage,
+} from "@/server/sessionStore";
+import {
   expandMessage,
   harnessCreateSession,
   harnessSendMessage,
@@ -491,6 +495,13 @@ async function runInitialPrompt(
             })),
           ]
         : expandMessage(initial_prompt);
+    // Record the initial prompt in the durable log *before* sending so the
+    // first turn is replayable if the sandbox dies before the agent replies.
+    const userMsg = await appendUserMessage({
+      session_id,
+      harness_session_id,
+      parts: parts as import("@/server/types").HarnessMessagePart[],
+    });
     const response = await harnessSendMessage({
       sandbox_url,
       harness_session_id,
@@ -503,6 +514,12 @@ async function runInitialPrompt(
         response: response as unknown as Prisma.InputJsonValue,
         last_seen_at: new Date(),
       },
+    });
+    void completeAssistantMessage({
+      session_id,
+      user_message_id: userMsg?.message_id ?? null,
+      harness_session_id,
+      response,
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
