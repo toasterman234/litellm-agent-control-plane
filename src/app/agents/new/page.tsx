@@ -211,8 +211,13 @@ export default function NewAgentPage() {
       for (const key of Object.keys(envVarsRecord)) {
         if (envVarHosts[key]?.length) finalEnvVarHosts[key] = envVarHosts[key];
       }
+      // Egress = per-secret hosts ∪ the project template's non-secret hosts, so
+      // a template's allow_out (e.g. a public endpoint the agent browses without
+      // auth) isn't dropped just because it isn't tied to a credential.
+      const projAllowOut =
+        projects.find((s) => s.id === selectedProjectId)?.allow_out ?? [];
       const derivedAllowOut = [
-        ...new Set(Object.values(finalEnvVarHosts).flat()),
+        ...new Set([...projAllowOut, ...Object.values(finalEnvVarHosts).flat()]),
       ];
 
       // If a template is selected and the user edited the skill panel, merge back.
