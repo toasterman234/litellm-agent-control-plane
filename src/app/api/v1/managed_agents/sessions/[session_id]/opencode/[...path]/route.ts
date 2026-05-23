@@ -267,14 +267,19 @@ async function proxy(req: Request, ctx: RouteContext): Promise<Response> {
           console.warn(`[opencode-proxy] session=${session_id} harness unreachable on send; recovering`);
           try {
             const newHarnessId = await recoverBrainInlineSession(session_id, cached.harness_session_id);
+            // Re-fetch cache to get the updated sandbox_url (new pod IP/Service DNS).
+            const fresh = await getCachedSession(session_id);
+            const newSandboxUrl = fresh?.sandbox_url ?? cached.sandbox_url;
             const newTail = tail.replace(cached.harness_session_id, newHarnessId);
-            const newTarget = `${cached.sandbox_url}/${newTail}${search}`;
+            const newTarget = `${newSandboxUrl}/${newTail}${search}`;
             upstream = await fetch(newTarget, { ...init, body: bodyBuf ?? undefined });
-            console.log(`[opencode-proxy] session=${session_id} recovery=retry_ok`);
+            console.log(`[opencode-proxy] session=${session_id} recovery=retry_ok sandbox_url=${newSandboxUrl}`);
           } catch (recoveryErr) {
             console.error(`[opencode-proxy] session=${session_id} recovery failed:`, recoveryErr);
             if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
-            throw err; // surface original connection error
+            // Surface retryable errors as-is; fall back to original for hard failures.
+            if (recoveryErr instanceof HttpError) throw recoveryErr;
+            throw err;
           }
         } else {
           // Non-brain-inline or non-send path: flag the turn and propagate.
@@ -289,14 +294,18 @@ async function proxy(req: Request, ctx: RouteContext): Promise<Response> {
         console.warn(`[opencode-proxy] session=${session_id} harness 404 on send (session Map wiped); recovering`);
         try {
           const newHarnessId = await recoverBrainInlineSession(session_id, cached.harness_session_id);
+          // Re-fetch cache for the updated sandbox_url after recovery.
+          const fresh = await getCachedSession(session_id);
+          const newSandboxUrl = fresh?.sandbox_url ?? cached.sandbox_url;
           const newTail = tail.replace(cached.harness_session_id, newHarnessId);
-          const newTarget = `${cached.sandbox_url}/${newTail}${search}`;
+          const newTarget = `${newSandboxUrl}/${newTail}${search}`;
           upstream = await fetch(newTarget, { ...init, body: bodyBuf ?? undefined });
-          console.log(`[opencode-proxy] session=${session_id} recovery=retry_ok (was 404)`);
+          console.log(`[opencode-proxy] session=${session_id} recovery=retry_ok (was 404) sandbox_url=${newSandboxUrl}`);
         } catch (recoveryErr) {
           console.error(`[opencode-proxy] session=${session_id} recovery failed after 404:`, recoveryErr);
           if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
-          // Fall through — upstream is still the 404 response, will be proxied to client.
+          // Surface retryable errors; fall through otherwise (proxy original 404).
+          if (recoveryErr instanceof HttpError) throw recoveryErr;
         }
       }
     }
