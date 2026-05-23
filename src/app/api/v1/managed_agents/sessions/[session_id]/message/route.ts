@@ -205,6 +205,7 @@ async function recoverAndResend(opts: {
     throw new HttpError(502, "session recovery failed");
   }
 
+  console.log(`[message] session=${session_id} recovery=complete sandbox_url=${recovered.sandbox_url} harness_session_id=${recovered.harness_session_id}`);
   const hb = startHeartbeat(session_id);
   let response: HarnessMessageResponse;
   try {
@@ -268,6 +269,7 @@ export async function POST(req: Request, ctx: RouteContext) {
     });
 
     let response: HarnessMessageResponse;
+    console.log(`[message] session=${session_id} sandbox_url=${cached.sandbox_url} harness_session_id=${cached.harness_session_id}`);
     const hb = startHeartbeat(session_id);
     try {
       response = await harnessSendMessage({
@@ -280,7 +282,7 @@ export async function POST(req: Request, ctx: RouteContext) {
       if (isHardConnectFailure(err) || isDeadSessionError(err)) {
         // Dead sandbox — try transparent recovery before giving up.
         console.warn(
-          `session ${session_id} sandbox unreachable; attempting auto-recovery`,
+          `session ${session_id} sandbox_url=${cached.sandbox_url} sandbox unreachable; attempting auto-recovery`,
         );
         try {
           const recovered = await recoverAndResend({

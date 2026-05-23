@@ -79,6 +79,8 @@ async function waitForConcurrentRehydrate(
   session_id: string,
 ): Promise<RehydrateResult> {
   const deadline = Date.now() + CONCURRENT_REHYDRATE_TIMEOUT_MS;
+  const waitStart = Date.now();
+  console.log(`[rehydrate] session=${session_id} contention=waiting winner_owns_claim`);
   while (Date.now() < deadline) {
     await sleep(CONCURRENT_REHYDRATE_POLL_MS);
     const row = await prisma.session.findUnique({
@@ -108,7 +110,7 @@ async function waitForConcurrentRehydrate(
       );
     }
   }
-  throw new Error(`timed out waiting for concurrent rehydrate of ${session_id}`);
+  throw new Error(`timed out waiting for concurrent rehydrate of ${session_id} after ${Math.round((Date.now() - waitStart) / 1000)}s`);
 }
 
 // Build the replay text for a session: durable log first, legacy blob second.
@@ -153,6 +155,9 @@ export async function rehydrateSession(
     return waitForConcurrentRehydrate(session_id);
   }
   invalidateSession(session_id);
+  const rehydrateStart = Date.now();
+  const elapsed = () => `${Math.round((Date.now() - rehydrateStart) / 1000)}s`;
+  console.log(`[rehydrate] session=${session_id} phase=start`);
 
   // We own the claim now — best-effort stop of the old task. Leaving an orphan
   // is cheap (the reconciler reaps dead-row tasks); blocking recovery on it is
@@ -184,16 +189,19 @@ export async function rehydrateSession(
     } else {
       const { task_arn } = await runTask({ agent, session_id });
       new_task_arn = task_arn;
+      console.log(`[rehydrate] session=${session_id} phase=pod_spawn elapsed=${elapsed()} task_arn=${task_arn}`);
       await prisma.session.update({
         where: { session_id },
         data: { task_arn },
       });
       sandbox_url = await waitRunningGetUrl(task_arn, agent);
+      console.log(`[rehydrate] session=${session_id} phase=pod_running elapsed=${elapsed()} sandbox_url=${sandbox_url}`);
       await prisma.session.update({
         where: { session_id },
         data: { sandbox_url },
       });
       await waitHttpReady(sandbox_url);
+      console.log(`[rehydrate] session=${session_id} phase=harness_ready elapsed=${elapsed()}`);
     }
 
     const harness_session_id = await harnessCreateSession({
@@ -201,6 +209,7 @@ export async function rehydrateSession(
       title: "restart",
       files,
     });
+    console.log(`[rehydrate] session=${session_id} phase=session_created elapsed=${elapsed()} harness_session_id=${harness_session_id}`);
 
     // Replay the prior thread into the fresh harness session as context.
     let response: HarnessMessageResponse | null = null;
@@ -209,6 +218,7 @@ export async function rehydrateSession(
       opts.previousHistory,
       opts.excludeMessageId,
     );
+    console.log(`[rehydrate] session=${session_id} phase=history_replay elapsed=${elapsed()} chars=${replayText?.length ?? 0}`);
     if (replayText) {
       response = await harnessSendMessage({
         sandbox_url,
@@ -216,6 +226,7 @@ export async function rehydrateSession(
         model: agent.model,
         parts: expandMessage(replayText),
       });
+      console.log(`[rehydrate] session=${session_id} phase=replay_complete elapsed=${elapsed()}`);
     }
 
     await prisma.session.update({
@@ -244,6 +255,7 @@ export async function rehydrateSession(
       sandboxes: null,
     });
 
+    console.log(`[rehydrate] session=${session_id} phase=complete elapsed=${elapsed()} sandbox_url=${sandbox_url}`);
     return { sandbox_url, harness_session_id, response };
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);

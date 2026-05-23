@@ -22,18 +22,122 @@
 
 import { assertAuth } from "@/server/auth";
 import { prisma } from "@/server/db";
-import { getCachedSession, type SessionCacheEntry } from "@/server/sessionCache";
-import { markUserMessageFailed } from "@/server/sessionStore";
+import { env } from "@/server/env";
+import {
+  expandMessage,
+  formatHistoryAsText,
+  harnessCreateSession,
+  harnessDeleteSession,
+  harnessSendMessage,
+} from "@/server/harness";
+import { inlineHarnessUrl } from "@/server/k8s";
+import { getCachedSession, invalidateSession, putCachedSession, type SessionCacheEntry } from "@/server/sessionCache";
+import { markUserMessageFailed, formatSessionMessagesAsText, listSessionMessages } from "@/server/sessionStore";
 import {
   recordUserSend,
   watchEventStreamAndSnapshot,
 } from "@/server/sessionThreadSync";
-import { HttpError, httpError } from "@/server/types";
+import {
+  HARNESS_BRAIN_INLINE,
+  HttpError,
+  httpError,
+  type HarnessMessage,
+  type SandboxFileSpec,
+} from "@/server/types";
 
 // opencode paths we persist from. The web UI / CLI drive the harness through
 // this proxy (never our /message route), so the durable conversation log has to
 // be captured here. See src/server/sessionThreadSync.ts.
-const SEND_PATH = /^session\/[^/]+\/(message|prompt_async)$/;
+const SEND_PATH = new RegExp("^session/[^/]+/(message|prompt_async)$");
+
+/**
+ * Recover a brain-inline session whose harness-side state was lost (pod
+ * restart, rolling deploy). Creates a new harness session on the same inline
+ * URL, replays the durable log, updates the DB + cache, and returns the new
+ * harness_session_id so the caller can rewrite the request path and retry.
+ *
+ * Mirrors the logic in restart/route.ts brain-inline fast path.
+ */
+async function recoverBrainInlineSession(
+  session_id: string,
+  old_harness_session_id: string,
+): Promise<string> {
+  const row = await prisma.session.findUnique({
+    where: { session_id },
+    include: { agent: true },
+  });
+  if (!row?.agent) throw new HttpError(502, "session not found during recovery");
+
+  const inlineUrl =
+    process.env.CLAUDE_CODE_INLINE_URL ||
+    (env.IN_CLUSTER ? inlineHarnessUrl() : null);
+  if (!inlineUrl) throw new HttpError(503, "CLAUDE_CODE_INLINE_URL not configured");
+
+  console.log(`[opencode-proxy] session=${session_id} recovery=start old_harness_session_id=${old_harness_session_id}`);
+
+  // Best-effort cleanup of the old (now-dead) harness session.
+  await harnessDeleteSession({ sandbox_url: inlineUrl, harness_session_id: old_harness_session_id })
+    .catch(() => {});
+
+  const rawFiles = (row.agent as Record<string, unknown>).sandbox_files;
+  const rawProjects = (row.agent as Record<string, unknown>).projects;
+  const projects = Array.isArray(rawProjects)
+    ? (rawProjects as Array<{ id: string; name: string; description: string; repo_url?: string }>)
+    : [];
+
+  const new_harness_session_id = await harnessCreateSession({
+    sandbox_url: inlineUrl,
+    title: "recovery",
+    files: Array.isArray(rawFiles) ? (rawFiles as SandboxFileSpec[]) : undefined,
+    sandbox_tools: true,
+    projects,
+    agent_id: row.agent.agent_id,
+    platform_session_id: session_id,
+  });
+  console.log(`[opencode-proxy] session=${session_id} recovery=session_created new_harness_session_id=${new_harness_session_id}`);
+
+  // Update DB + cache with the new harness_session_id.
+  await prisma.session.update({
+    where: { session_id },
+    data: { harness_session_id: new_harness_session_id, sandbox_url: inlineUrl, last_seen_at: new Date() },
+  });
+  invalidateSession(session_id);
+  putCachedSession({
+    session_id,
+    agent_id: row.agent.agent_id,
+    agent_model: row.agent.model,
+    harness_id: row.agent.harness_id,
+    sandbox_url: inlineUrl,
+    harness_session_id: new_harness_session_id,
+    status: "ready",
+    sandboxes: null,
+  });
+
+  // Replay history fire-and-forget so the first real message sees context.
+  void (async () => {
+    try {
+      const rows = await listSessionMessages(session_id);
+      const replayText = rows.length > 0
+        ? formatSessionMessagesAsText(rows)
+        : Array.isArray(row.history) && row.history.length > 0
+          ? formatHistoryAsText(row.history as unknown as HarnessMessage[])
+          : null;
+      if (replayText) {
+        await harnessSendMessage({
+          sandbox_url: inlineUrl,
+          harness_session_id: new_harness_session_id,
+          model: row.agent.model,
+          parts: expandMessage(replayText),
+        });
+        console.log(`[opencode-proxy] session=${session_id} recovery=replay_complete`);
+      }
+    } catch (err) {
+      console.warn(`[opencode-proxy] session=${session_id} recovery replay failed:`, err);
+    }
+  })();
+
+  return new_harness_session_id;
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -131,7 +235,7 @@ async function proxy(req: Request, ctx: RouteContext): Promise<Response> {
     // and 404 (pod restarted, session lost from memory) and fall back to the DB
     // history snapshot so the UI can still render the conversation.
     const isMessageHistory =
-      req.method === "GET" && /^session\/[^/]+\/message$/.test(tail);
+      req.method === "GET" && new RegExp("^session/[^/]+/message$").test(tail);
 
     let upstream: Response;
     if (isMessageHistory) {
@@ -141,13 +245,49 @@ async function proxy(req: Request, ctx: RouteContext): Promise<Response> {
         upstream = new Response(JSON.stringify({ error: "not found" }), { status: 404 });
       }
     } else {
+      const isBrainInlineSend =
+        cached.harness_id === HARNESS_BRAIN_INLINE && req.method === "POST" && SEND_PATH.test(tail);
+
       try {
         upstream = await fetch(target, init);
       } catch (err) {
-        // Harness unreachable — flag the just-recorded user turn `failed` so it
-        // isn't replayed as a phantom unanswered turn on the next recovery.
-        if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
-        throw err;
+        // Harness unreachable on a brain-inline send — attempt transparent recovery
+        // (create new harness session, replay history, retry with new session id).
+        if (isBrainInlineSend) {
+          console.warn(`[opencode-proxy] session=${session_id} harness unreachable on send; recovering`);
+          try {
+            const newHarnessId = await recoverBrainInlineSession(session_id, cached.harness_session_id);
+            const newTail = tail.replace(cached.harness_session_id, newHarnessId);
+            const newTarget = `${cached.sandbox_url}/${newTail}${search}`;
+            upstream = await fetch(newTarget, { ...init, body: bodyBuf ?? undefined });
+            console.log(`[opencode-proxy] session=${session_id} recovery=retry_ok`);
+          } catch (recoveryErr) {
+            console.error(`[opencode-proxy] session=${session_id} recovery failed:`, recoveryErr);
+            if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
+            throw err; // surface original connection error
+          }
+        } else {
+          // Non-brain-inline or non-send path: flag the turn and propagate.
+          if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
+          throw err;
+        }
+      }
+
+      // Harness returned 404 on a brain-inline send = session lost from in-process Map.
+      // Recover transparently the same way as a connect failure.
+      if (isBrainInlineSend && upstream.status === 404) {
+        console.warn(`[opencode-proxy] session=${session_id} harness 404 on send (session Map wiped); recovering`);
+        try {
+          const newHarnessId = await recoverBrainInlineSession(session_id, cached.harness_session_id);
+          const newTail = tail.replace(cached.harness_session_id, newHarnessId);
+          const newTarget = `${cached.sandbox_url}/${newTail}${search}`;
+          upstream = await fetch(newTarget, { ...init, body: bodyBuf ?? undefined });
+          console.log(`[opencode-proxy] session=${session_id} recovery=retry_ok (was 404)`);
+        } catch (recoveryErr) {
+          console.error(`[opencode-proxy] session=${session_id} recovery failed after 404:`, recoveryErr);
+          if (sentUserMsgId) await markUserMessageFailed(sentUserMsgId);
+          // Fall through — upstream is still the 404 response, will be proxied to client.
+        }
       }
     }
 
