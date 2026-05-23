@@ -758,7 +758,7 @@ export async function runTask(
                 // typically). Limits stay generous so a chatty session
                 // burst isn't artificially throttled.
                 requests: { cpu: "100m", memory: "512Mi" },
-                limits: { cpu: "1", memory: "2Gi" },
+                limits: { cpu: "2", memory: "4Gi" },
               },
             },
             {
