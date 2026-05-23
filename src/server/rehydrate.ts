@@ -41,7 +41,7 @@ import type {
   HarnessMessageResponse,
   SandboxFileSpec,
 } from "@/server/types";
-import { HARNESS_BRAIN_INLINE } from "@/server/types";
+import { HARNESS_OPENCODE_BRAIN_INLINE, inlineHarnessUrlEnv, isInlineHarness } from "@/server/types";
 
 export interface RehydrateResult {
   sandbox_url: string;
@@ -183,11 +183,15 @@ export async function rehydrateSession(
   // Brain-inline fast path: no pod needed — reuse the shared harness Deployment.
   // The generic path below would call runTask() which creates a new k8s sandbox
   // pod, which is wrong for brain-inline and will always time out.
-  if (agent.harness_id === HARNESS_BRAIN_INLINE) {
+  if (isInlineHarness(agent.harness_id)) {
+    const isOpencodeInline = agent.harness_id === HARNESS_OPENCODE_BRAIN_INLINE;
     const inlineUrl =
-      process.env.CLAUDE_CODE_INLINE_URL ||
-      (env.IN_CLUSTER ? inlineHarnessUrl() : null);
-    if (!inlineUrl) throw new Error("CLAUDE_CODE_INLINE_URL not configured for brain-inline rehydrate");
+      inlineHarnessUrlEnv(agent.harness_id) ||
+      (!isOpencodeInline && env.IN_CLUSTER ? inlineHarnessUrl() : null);
+    if (!inlineUrl) {
+      const name = isOpencodeInline ? "OPENCODE_INLINE_URL" : "CLAUDE_CODE_INLINE_URL";
+      throw new Error(`${name} not configured for inline rehydrate`);
+    }
 
     // Best-effort delete of the old harness session before creating a fresh one.
     if (opts.oldTaskArn === null) {
