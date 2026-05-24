@@ -80,7 +80,7 @@ ${MCP_BLOCK}
   "model": "litellm/${LITELLM_DEFAULT_MODEL}",
   "permission": {
     "edit": "allow",
-    "bash": "allow",
+    "bash": "deny",
     "webfetch": "allow",
     "doom_loop": "allow",
     "external_directory": "allow"
