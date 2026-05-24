@@ -4,9 +4,15 @@
 # (no per-session clone). Both repos are public — no token baked in.
 FROM e2bdev/code-interpreter:latest
 
+USER root
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+
+# Trust cloud-vault CA so HTTPS_PROXY TLS MITM succeeds in sandboxes
+COPY cloud-vault-ca.crt /usr/local/share/ca-certificates/cloud-vault-ca.crt
+RUN update-ca-certificates
 
 RUN git clone --depth 1 https://github.com/BerriAI/litellm.git /home/user/litellm \
  && git clone --depth 1 https://github.com/BerriAI/litellm-docs.git /home/user/litellm-docs \

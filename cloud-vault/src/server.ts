@@ -524,8 +524,7 @@ proxy.on("connect", async (req, socket) => {
     const givenBuf = Buffer.from(given, "utf8");
     const expectedBuf = Buffer.from(PROXY_TOKEN, "utf8");
     if (givenBuf.length !== expectedBuf.length || !timingSafeEqual(givenBuf, expectedBuf)) {
-      socket.write("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"cloud-vault\"\r\nProxy-Agent: cloud-vault\r\n\r\n");
-      socket.destroy();
+      socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"cloud-vault\"\r\nProxy-Agent: cloud-vault\r\n\r\n");
       return;
     }
   }
