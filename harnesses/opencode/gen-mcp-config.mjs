@@ -35,6 +35,8 @@ if (e2bKey) {
       ...(process.env.LAP_AUTH_TOKEN && { LAP_AUTH_TOKEN: process.env.LAP_AUTH_TOKEN }),
       ...(process.env.MASTER_KEY && { MASTER_KEY: process.env.MASTER_KEY }),
       ...(process.env.SESSION_ID && { SESSION_ID: process.env.SESSION_ID }),
+      ...(process.env.VAULT_URL && { VAULT_URL: process.env.VAULT_URL }),
+      ...(process.env.VAULT_PROXY_TOKEN && { VAULT_PROXY_TOKEN: process.env.VAULT_PROXY_TOKEN }),
     },
   };
 }

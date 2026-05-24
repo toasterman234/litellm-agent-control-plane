@@ -764,7 +764,7 @@ export const POST = wrap<RouteContext>(async (req, ctx) => {
         sandbox_url: inlineUrl,
         harness_session_id,
         model: agent.model,
-        parts: expandMessage(body.initial_prompt),
+        parts: prependAgentSystemPrompt(agent.prompt, expandMessage(body.initial_prompt), session.session_id),
       }).catch((err: unknown) => {
         console.error(`brain-inline initial_prompt failed: ${err instanceof Error ? err.message : String(err)}`);
       });
