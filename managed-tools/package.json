@@ -25,7 +25,9 @@
   },
   "files": ["dist", "src"],
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test test/"
   },
   "dependencies": {
     "undici": "^7.0.0",
