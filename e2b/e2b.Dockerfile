@@ -62,7 +62,8 @@ RUN pip install --no-cache-dir uv
 
 # ── Clone repos ───────────────────────────────────────────────────────────────
 RUN git clone --depth 1 https://github.com/BerriAI/litellm.git /home/user/litellm \
- && git clone --depth 1 https://github.com/BerriAI/litellm-docs.git /home/user/litellm-docs
+ && git clone --depth 1 https://github.com/BerriAI/litellm-docs.git /home/user/litellm-docs \
+ && git clone --depth 1 https://github.com/BerriAI/litellm-agent-platform.git /home/user/litellm-agent-platform
 
 # ── Pre-install proxy deps ─────────────────────────────────────────────────────
 # Done at image-build time so agents never wait for a 200-package install.
@@ -107,7 +108,7 @@ COPY start-db.sh /usr/local/bin/start-db
 COPY dev-up.sh /usr/local/bin/dev-up
 RUN chmod +x /usr/local/bin/start-db /usr/local/bin/dev-up
 
-RUN chown -R user:user /home/user/litellm /home/user/litellm-docs
+RUN chown -R user:user /home/user/litellm /home/user/litellm-docs /home/user/litellm-agent-platform
 
 # Drop back to `user` (we switched to root on line 12). The sandbox runs as
 # `user`, and postgres' pg_ctl refuses to run as root — so the start_cmd needs
