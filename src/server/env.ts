@@ -109,10 +109,14 @@ const EnvSchema = z.object({
   WARM_POOL_PRIORITY_AGENT_ID: z.string().optional(),
   WARM_POOL_PRIORITY_SIZE: z.coerce.number().int().positive().default(1),
 
-  // S3 artifact storage — optional; route returns 503 when unset.
+  // S3 artifact storage — optional. When ARTIFACT_STORAGE="s3" and
+  // AWS_S3_BUCKET is set, harness pods can POST file uploads to
+  // /api/v1/managed_agents/sessions/{id}/artifacts and receive a 7-day
+  // presigned URL back. Unset on existing deployments → the artifact
+  // route returns 503 and the rest of the platform boots unchanged.
   ARTIFACT_STORAGE: z.enum(["s3"]).optional(),
   AWS_S3_BUCKET: z.string().min(1).optional(),
-  AWS_REGION: z.string().default("us-east-1"),
+  AWS_REGION: z.string().min(1).default("us-east-1"),
 });
 
 function collectContainerEnvPassthrough(
