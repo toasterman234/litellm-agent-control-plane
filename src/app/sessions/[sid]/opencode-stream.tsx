@@ -126,52 +126,72 @@ export function useOpencodeThread(
       const oc = browserOpencodeClient(sessionId);
       ocRef.current = oc;
 
-      try {
-        const hist = await oc.session.messages({
-          path: { id: harnessSessionId },
-        });
-        const seeded = seedFromHistory(
-          (hist.data ?? []) as unknown as Parameters<typeof seedFromHistory>[0],
-        );
-        if (!cancelled) {
-          setStates((prev) => new Map(prev).set(harnessSessionId, seeded));
-        }
-      } catch {
-        // pod warming up — live events will populate the thread
-      }
-      if (cancelled) return;
-
-      let events;
-      try {
-        events = await oc.event.subscribe({ signal: ctl.signal });
-      } catch {
-        return;
-      }
-      try {
-        for await (const ev of events.stream) {
-          if (cancelled) break;
-          const e = ev as unknown as OpencodeEvent;
-          const sid = e.properties?.sessionID;
-          if (typeof sid !== "string") continue; // global lifecycle — skip
-          setStates((prev) => {
-            const next = new Map(prev);
-            next.set(sid, applyEvent(next.get(sid) ?? initState(), e));
-            return next;
+      // (Re)connect loop. opencode's /event is a long-lived SSE that an idle
+      // proxy/load-balancer timeout can drop mid-session (e.g. during a long
+      // tool turn that emits no frames for minutes). Without this loop the
+      // `for await` just ends and the transcript silently freezes while the
+      // turn keeps running server-side. On every disconnect we re-seed from
+      // history (/event does NOT replay, so this catches anything missed during
+      // the gap) and re-subscribe, with capped backoff, so the chat self-heals.
+      const sleep = (ms: number) =>
+        new Promise<void>((r) => setTimeout(r, ms));
+      let backoffMs = 1000;
+      while (!cancelled) {
+        try {
+          const hist = await oc.session.messages({
+            path: { id: harnessSessionId },
           });
-          if (
-            sid === harnessSessionId &&
-            (e.type === "session.idle" ||
-              e.type === "session.aborted" ||
-              e.type === "session.error")
-          ) {
-            // session.error must clear busy too, or an agent error (rate limit,
-            // context overflow, harness crash) locks the composer on a spinner
-            // until a hard refresh.
-            setBusy(false);
+          const seeded = seedFromHistory(
+            (hist.data ?? []) as unknown as Parameters<typeof seedFromHistory>[0],
+          );
+          if (!cancelled) {
+            setStates((prev) => new Map(prev).set(harnessSessionId, seeded));
           }
+        } catch {
+          // pod warming up — live events will populate the thread
         }
-      } catch {
-        // aborted on unmount / nav, or the stream closed
+        if (cancelled) return;
+
+        let events;
+        try {
+          events = await oc.event.subscribe({ signal: ctl.signal });
+        } catch {
+          if (cancelled) return;
+          await sleep(backoffMs);
+          backoffMs = Math.min(backoffMs * 2, 15000);
+          continue;
+        }
+        backoffMs = 1000; // connected — reset backoff
+        try {
+          for await (const ev of events.stream) {
+            if (cancelled) break;
+            const e = ev as unknown as OpencodeEvent;
+            const sid = e.properties?.sessionID;
+            if (typeof sid !== "string") continue; // global lifecycle — skip
+            setStates((prev) => {
+              const next = new Map(prev);
+              next.set(sid, applyEvent(next.get(sid) ?? initState(), e));
+              return next;
+            });
+            if (
+              sid === harnessSessionId &&
+              (e.type === "session.idle" ||
+                e.type === "session.aborted" ||
+                e.type === "session.error")
+            ) {
+              // session.error must clear busy too, or an agent error (rate limit,
+              // context overflow, harness crash) locks the composer on a spinner
+              // until a hard refresh.
+              setBusy(false);
+            }
+          }
+        } catch {
+          // stream dropped (idle timeout / network) — fall through to reconnect
+        }
+        // Stream ended without unmount: reconnect after a short backoff.
+        if (cancelled) return;
+        await sleep(backoffMs);
+        backoffMs = Math.min(backoffMs * 2, 15000);
       }
     })();
 
