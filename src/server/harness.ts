@@ -8,6 +8,7 @@
 
 import { fetch } from "undici";
 
+import { buildSessionUrl } from "./sessionUrl";
 import type {
   HarnessCreateSessionOpts,
   HarnessMessage,
@@ -115,7 +116,16 @@ export function prependAgentSystemPrompt(
   session_id?: string,
 ): HarnessMessagePart[] {
   const trimmed = prompt?.trim();
-  const sessionLine = session_id ? `<lap_session_id>${session_id}</lap_session_id>\n` : "";
+  // Inject BOTH the raw id and the full public URL so the agent never has to
+  // construct a session link itself (it hallucinates the id). When it must
+  // reference the session in text (e.g. a channel post), it copies
+  // <lap_session_url> verbatim. buildSessionUrl returns null without a public
+  // base URL, in which case we fall back to the id line only.
+  const sessionUrl = session_id ? buildSessionUrl(session_id) : null;
+  const sessionLine = session_id
+    ? `<lap_session_id>${session_id}</lap_session_id>\n` +
+      (sessionUrl ? `<lap_session_url>${sessionUrl}</lap_session_url>\n` : "")
+    : "";
   if (!trimmed && !sessionLine) return parts;
   const body = trimmed
     ? `<system_instructions>\n${trimmed}\n</system_instructions>\n\n` +
