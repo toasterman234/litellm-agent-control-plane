@@ -76,19 +76,40 @@ RUN cd /home/user/litellm \
 # start/stop it without sudo inside the sandbox.
 # pg_hba.conf default: Unix socket = trust, TCP = md5.
 # litellm connects via TCP as role `litellm` with password `litellm`.
+# unix_socket_directories is set to /tmp: the default /var/run/postgresql is
+# root-owned (and a tmpfs that resets at sandbox runtime), so a `user`-run
+# server can't create its socket lock there. /tmp is writable at build and run.
 RUN set -e; \
     PG_VERSION=$(ls /usr/lib/postgresql | sort -V | tail -1); \
     PG_BIN="/usr/lib/postgresql/${PG_VERSION}/bin"; \
     PG_DATA="/home/user/pgdata"; \
     su -c "${PG_BIN}/initdb -D ${PG_DATA}" user; \
+    su -c "echo \"unix_socket_directories = '/tmp'\" >> ${PG_DATA}/postgresql.conf" user; \
     su -c "${PG_BIN}/pg_ctl -D ${PG_DATA} start -w -t 30" user; \
-    su -c "psql -c \"CREATE USER litellm WITH PASSWORD 'litellm';\"" user; \
-    su -c "psql -c \"CREATE DATABASE litellm OWNER litellm;\"" user; \
+    su -c "psql -h /tmp -d postgres -c \"CREATE USER litellm WITH PASSWORD 'litellm';\"" user; \
+    su -c "psql -h /tmp -d postgres -c \"CREATE DATABASE litellm OWNER litellm;\"" user; \
     su -c "${PG_BIN}/pg_ctl -D ${PG_DATA} stop -m fast" user
 
-# ── dev-up script ─────────────────────────────────────────────────────────────
-# source /usr/local/bin/dev-up  → starts postgres + exports all proxy env vars
+# ── Dev DB + proxy env (baked in) ──────────────────────────────────────────────
+# E2B runs each `commands.run` in a fresh, non-interactive shell, so env from
+# `source dev-up` never carries across commands. Baking these as image ENV makes
+# DATABASE_URL (and the proxy creds) available to EVERY command automatically.
+# Postgres itself is auto-started by the template start_cmd (see e2b.toml).
+ENV DATABASE_URL=postgresql://litellm:litellm@localhost:5432/litellm
+ENV LITELLM_MASTER_KEY=sk-1234
+ENV LITELLM_SALT_KEY=sk-litellm-salt-dev-unsafe
+ENV STORE_MODEL_IN_DB=True
+
+# ── DB start + dev-up scripts ──────────────────────────────────────────────────
+# start-db: starts postgres (run at sandbox boot via e2b.toml start_cmd).
+# dev-up:   source it for an interactive shell → starts postgres + exports env.
+COPY start-db.sh /usr/local/bin/start-db
 COPY dev-up.sh /usr/local/bin/dev-up
-RUN chmod +x /usr/local/bin/dev-up
+RUN chmod +x /usr/local/bin/start-db /usr/local/bin/dev-up
 
 RUN chown -R user:user /home/user/litellm /home/user/litellm-docs
+
+# Drop back to `user` (we switched to root on line 12). The sandbox runs as
+# `user`, and postgres' pg_ctl refuses to run as root — so the start_cmd needs
+# this to be the image's default user.
+USER user

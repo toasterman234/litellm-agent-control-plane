@@ -11,17 +11,9 @@
 # exit the caller's shell on any failed command.
 set -uo pipefail
 
-PG_VERSION=$(ls /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)
-PG_BIN="/usr/lib/postgresql/${PG_VERSION}/bin"
-PG_DATA="/home/user/pgdata"
-
-if "${PG_BIN}/pg_ctl" -D "${PG_DATA}" status >/dev/null 2>&1; then
-  echo "[dev-up] PostgreSQL already running."
-else
-  echo "[dev-up] Starting PostgreSQL ${PG_VERSION}..."
-  "${PG_BIN}/pg_ctl" -D "${PG_DATA}" start -w -t 30 -l /tmp/postgres.log
-  echo "[dev-up] PostgreSQL started."
-fi
+# Start postgres (idempotent). Shared with the sandbox start_cmd so there's a
+# single source of truth for the PG start logic.
+/usr/local/bin/start-db
 
 export DATABASE_URL="postgresql://litellm:litellm@localhost:5432/litellm"
 export LITELLM_MASTER_KEY="sk-1234"

@@ -12,6 +12,8 @@
 
 memory_mb = 4_096
 cpu_count = 8
+ready_cmd = "pg_isready -h localhost -p 5432 -U litellm"
+start_cmd = "/usr/local/bin/start-db"
 dockerfile = "e2b.Dockerfile"
 template_name = "litellm-4gb"
 template_id = "hb5oc45lzy0v9eh0y9ut"
