@@ -32,7 +32,18 @@ PORT="${1:-$(python3 -c 'import socket;s=socket.socket();s.bind(("",0));print(s.
 
 LOGDIR=/tmp/llmlogs; mkdir -p "$LOGDIR"
 LOG="$LOGDIR/proxy.${PORT}.log"
-CONFIG="${LITELLM_CONFIG:-/tmp/litellm_config.yaml}"
+# Config lives in the image at /home/user (persists) — NOT /tmp, which is a fresh
+# tmpfs on sandbox boot and wipes anything baked there. Seed a default if absent.
+CONFIG="${LITELLM_CONFIG:-/home/user/litellm_config.yaml}"
+if [ ! -f "$CONFIG" ]; then
+  cat > "$CONFIG" <<'YAML'
+model_list: []
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+litellm_settings:
+  drop_params: true
+YAML
+fi
 cd "${LITELLM_DIR:-/home/user/litellm}"
 
 # --use_prisma_db_push: `prisma db push` (≈600 ms) instead of `migrate deploy`
@@ -42,6 +53,7 @@ echo "[litellm-up] starting proxy on :$PORT (db push, log: $LOG)" >&2
 nohup python -m litellm.proxy.proxy_cli \
   --config "$CONFIG" --port "$PORT" --use_prisma_db_push > "$LOG" 2>&1 &
 PID=$!
+echo "$PORT" > "$LOGDIR/current_port"   # record now so litellm-status can find us mid-boot
 
 fail() {
   echo "[litellm-up] $1" >&2
@@ -54,15 +66,19 @@ fail() {
   exit 1
 }
 
-# 4. Wait up to ~150s for readiness; detect a dead process immediately.
-for _ in $(seq 1 75); do
+# Wait up to ~80s — kept UNDER the 120s sandbox_execute cap so this call always
+# returns cleanly instead of being killed mid-wait. A dead process is a hard
+# failure; still-booting is NOT — return status:"starting" and let the caller
+# poll `litellm-status` until ready (that's the status->up pattern the skill teaches).
+for _ in $(seq 1 40); do
   kill -0 "$PID" 2>/dev/null || fail "proxy process exited before becoming ready."
   code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/health/readiness" 2>/dev/null || echo 000)
   if [ "$code" = "200" ]; then
-    echo "$PORT" > "$LOGDIR/current_port"   # so litellm-status can find us
-    printf '{"port":%s,"master_key":"%s","url":"http://127.0.0.1:%s"}\n' "$PORT" "$LITELLM_MASTER_KEY" "$PORT"
+    printf '{"port":%s,"master_key":"%s","url":"http://127.0.0.1:%s","status":"ready"}\n' "$PORT" "$LITELLM_MASTER_KEY" "$PORT"
     exit 0
   fi
   sleep 2
 done
-fail "readiness never returned 200 after ~150s."
+echo "[litellm-up] proxy still booting after ~80s but alive — poll: litellm-status" >&2
+printf '{"port":%s,"master_key":"%s","url":"http://127.0.0.1:%s","status":"starting"}\n' "$PORT" "$LITELLM_MASTER_KEY" "$PORT"
+exit 0
