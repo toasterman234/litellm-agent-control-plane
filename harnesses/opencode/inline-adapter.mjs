@@ -39,13 +39,16 @@ const log = (...a) => console.log("[inline-adapter]", ...a);
 function skillSlug(sandboxPath) {
   if (!sandboxPath) return null;
   const m = sandboxPath.replace(/\\/g, "/").match(/\/skills\/([^/]+)\/SKILL\.md$/);
-  return m && /^[a-z0-9._-]+$/i.test(m[1]) ? m[1] : null;
+  // Leading-alnum anchor rejects "." / ".." so a crafted name can't escape the
+  // per-agent skills dir via path traversal.
+  return m && /^[a-z0-9][a-z0-9._-]*$/i.test(m[1]) ? m[1] : null;
 }
 
 // Materialize an agent's skills into its own dir and return that dir. Writes a
 // fresh skills tree each time so detaching a skill is reflected on next session.
 function ensureAgentDir(agentId, files) {
-  const key = /^[a-z0-9._-]+$/i.test(agentId || "") ? agentId : "default";
+  // Leading-alnum anchor rejects "." / ".." so agent_id can't escape WORKDIR.
+  const key = /^[a-z0-9][a-z0-9._-]*$/i.test(agentId || "") ? agentId : "default";
   const dir = path.join(WORKDIR, key);
   const skillsRoot = path.join(dir, ".opencode", "skills");
   fs.rmSync(skillsRoot, { recursive: true, force: true });
