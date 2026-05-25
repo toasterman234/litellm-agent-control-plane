@@ -67,10 +67,21 @@ export class E2bProvider extends SandboxProvider {
       vaultCaEnv["SSL_CERT_FILE"] = "/tmp/vault-ca.crt";
     }
 
+    // Local dev DB shipped in the template (see e2b/). E2B strips Dockerfile
+    // ENV at runtime, so DATABASE_URL etc. must be set here for `commands.run`
+    // to see them — otherwise the proxy boots with no DB ("db: Not connected").
+    // Throwaway dev-only values, same ones the template's dev-up.sh exports.
+    const dbEnv: Record<string, string> = {
+      DATABASE_URL: "postgresql://litellm:litellm@localhost:5432/litellm",
+      LITELLM_MASTER_KEY: "sk-1234",
+      LITELLM_SALT_KEY: "sk-litellm-salt-dev-unsafe",
+      STORE_MODEL_IN_DB: "True",
+    };
+
     const sandbox = await Sandbox.create(this.template, {
       apiKey: this.apiKey,
       timeoutMs: 24 * 60 * 60 * 1000,
-      envs: { ...stubEnv, ...proxyEnv, ...vaultCaEnv },
+      envs: { ...dbEnv, ...stubEnv, ...proxyEnv, ...vaultCaEnv },
     });
 
     // Write combined CA bundle (system + vault CA) so git/curl/node trust vault's MITM certs
