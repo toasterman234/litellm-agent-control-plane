@@ -137,16 +137,18 @@ COPY litellm-status.sh /usr/local/bin/litellm-status
 RUN chmod +x /usr/local/bin/start-db /usr/local/bin/dev-up /usr/local/bin/litellm-up /usr/local/bin/litellm-status
 
 # Pre-seeded minimal proxy config (master_key from env; models live in the DB).
-COPY litellm_config.yaml /tmp/litellm_config.yaml
+# Lives in /home/user (persists) — NOT /tmp, which is a fresh tmpfs on sandbox
+# boot and would wipe a build-baked file.
+COPY litellm_config.yaml /home/user/litellm_config.yaml
 
 # Document the pre-clone so agents use it instead of re-cloning. Captures the
 # exact branch + commit baked into THIS image at build time.
-RUN printf '# LiteLLM checkout (pre-baked in the e2b template)\n\nThis repo is pre-cloned and `pip install -e ".[proxy]"` (+ prisma, playwright/chromium) is already done. **Use it — do not re-clone.**\n\n- branch: %s\n- commit: %s\n\n## Start / check the proxy\n\n    litellm-status        # JSON: ready|provisioning|down|oom — call this FIRST\n    litellm-up            # if not ready: free port + proxy, blocks until ready, prints {"port":N,"master_key":"sk-1234"}\n\nNever hardcode port 4000 — use the port litellm-up returns.\n\n## Facts\n- Master key: `sk-1234`. DB + `DATABASE_URL` pre-provisioned; models live in the DB (`STORE_MODEL_IN_DB=True`).\n- UI login is a real FORM, not localStorage: username `admin`, password = the master key (`sk-1234`).\n- UI routes lazy-compile — give `/ui/`, `/ui/?page=api-keys`, `/ui/?page=models` >= 10s on first hit before screenshotting.\n- Ephemeral dev DB: always start with `--use_prisma_db_push` (litellm-up does) — NOT `migrate deploy` (~20 min across 124 migrations).\n- `DISABLE_PROMETHEUS=true` is set to silence the weave->opentelemetry import noise.\n- Screenshots: playwright + chromium are pre-installed (PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright).\n' \
+RUN printf '# LiteLLM checkout (pre-baked in the e2b template)\n\nThis repo is pre-cloned and `pip install -e ".[proxy]"` (+ prisma, playwright/chromium) is already done. **Use it — do not re-clone.**\n\n- branch: %s\n- commit: %s\n\n## Start / check the proxy\n\n    litellm-status        # JSON: ready|provisioning|down|oom — call this FIRST\n    litellm-up            # free port + proxy; prints {"port":N,"master_key":"sk-1234","status":"ready|starting"}\n    # if status is "starting", poll litellm-status until it reports ready (boot ~20-40s)\n\nNever hardcode port 4000 — use the port litellm-up returns.\n\n## Facts\n- Master key: `sk-1234`. DB + `DATABASE_URL` pre-provisioned; models live in the DB (`STORE_MODEL_IN_DB=True`).\n- UI login is a real FORM, not localStorage: username `admin`, password = the master key (`sk-1234`).\n- UI routes lazy-compile — give `/ui/`, `/ui/?page=api-keys`, `/ui/?page=models` >= 10s on first hit before screenshotting.\n- Ephemeral dev DB: always start with `--use_prisma_db_push` (litellm-up does) — NOT `migrate deploy` (~20 min across 124 migrations).\n- `DISABLE_PROMETHEUS=true` is set to silence the weave->opentelemetry import noise.\n- Screenshots: playwright + chromium are pre-installed (PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright).\n' \
       "$(git -C /home/user/litellm rev-parse --abbrev-ref HEAD)" \
       "$(git -C /home/user/litellm rev-parse HEAD)" \
       > /home/user/litellm/AGENTS.md
 
-RUN chown -R user:user /home/user/litellm /home/user/litellm-docs /tmp/litellm_config.yaml
+RUN chown -R user:user /home/user/litellm /home/user/litellm-docs /home/user/litellm_config.yaml
 
 # Drop back to `user` (we switched to root on line 12). The sandbox runs as
 # `user`, and postgres' pg_ctl refuses to run as root — so the start_cmd needs
