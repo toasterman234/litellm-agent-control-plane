@@ -86,8 +86,8 @@ RUN set -e; \
     su -c "${PG_BIN}/initdb -D ${PG_DATA}" user; \
     su -c "echo \"unix_socket_directories = '/tmp'\" >> ${PG_DATA}/postgresql.conf" user; \
     su -c "${PG_BIN}/pg_ctl -D ${PG_DATA} start -w -t 30" user; \
-    su -c "psql -h /tmp -c \"CREATE USER litellm WITH PASSWORD 'litellm';\"" user; \
-    su -c "psql -h /tmp -c \"CREATE DATABASE litellm OWNER litellm;\"" user; \
+    su -c "psql -h /tmp -d postgres -c \"CREATE USER litellm WITH PASSWORD 'litellm';\"" user; \
+    su -c "psql -h /tmp -d postgres -c \"CREATE DATABASE litellm OWNER litellm;\"" user; \
     su -c "${PG_BIN}/pg_ctl -D ${PG_DATA} stop -m fast" user
 
 # ── Dev DB + proxy env (baked in) ──────────────────────────────────────────────
