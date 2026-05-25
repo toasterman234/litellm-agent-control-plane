@@ -12,6 +12,14 @@ Usage:  litellm-shot <base_url> [page_query] [out_png]
   e.g.  litellm-shot http://127.0.0.1:4000 "?page=api-keys" /home/user/keys.png
 """
 import os, sys
+
+# The chromium baked into the template lives here. The harness's sandbox_execute
+# does not inherit the image's ENV, so PLAYWRIGHT_BROWSERS_PATH is often unset at
+# call time and playwright then can't find the browser ("Executable doesn't
+# exist"). Default it ourselves so the helper is self-contained and the caller
+# never has to remember to export it.
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/ms-playwright")
+
 from playwright.sync_api import sync_playwright
 
 base = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:4000"
