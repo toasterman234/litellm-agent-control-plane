@@ -124,11 +124,11 @@ async function callUpdateSandboxSetup(env, input) {
 
   // GET current sandbox_files, replace/upsert the setup.sh entry
   const getRes = await callApi(env, "GET", `${env.base_url}/api/v1/managed_agents/agents/${agent_id}`, undefined);
-  if (!getRes.ok) {
+  if (!getRes.ok || getRes.data == null) {
     return { isError: true, text: `lap_update_sandbox_setup: failed to fetch agent (HTTP ${getRes.status})` };
   }
 
-  const existing = (getRes.data?.sandbox_files ?? []).filter((f) => f.name !== "setup.sh");
+  const existing = (getRes.data.sandbox_files ?? []).filter((f) => f.name !== "setup.sh");
   const scriptBuf = Buffer.from(input.script);
   const updated = [
     ...existing,
