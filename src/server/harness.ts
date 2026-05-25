@@ -263,16 +263,29 @@ export async function harnessSendMessage(
     parts,
     timeout_ms = DEFAULT_MESSAGE_TIMEOUT_MS,
   } = opts;
+  const url = `${sandbox_url}/session/${harness_session_id}/message`;
   const body = {
     model: { providerID: "litellm", modelID: model },
     parts,
   };
-  const data = await postJson(
-    `${sandbox_url}/session/${harness_session_id}/message`,
-    body,
-    timeout_ms,
-  );
-  return data as HarnessMessageResponse;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeout_ms),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new HarnessHttpError(res.status, res.statusText, text, url, "POST");
+  }
+  const text = await res.text();
+  // opencode inline adapter returns 200 with empty body when the harness
+  // session doesn't exist (stale session after server restart). Treat it as
+  // a dead session so the caller's recovery path triggers.
+  if (!text.trim()) {
+    throw new HarnessHttpError(404, "Not Found", JSON.stringify({ error: "not found" }), url, "POST");
+  }
+  return JSON.parse(text) as HarnessMessageResponse;
 }
 
 /**
