@@ -106,17 +106,21 @@ test.describe.serial("agent issue reporting — implicit behavior", () => {
     await page.waitForTimeout(30_000);
     await browser.close();
 
-    // Check issue was filed automatically.
-    // Agent may or may not pass session_id as a tool param (it's optional), so
-    // don't filter by session_id — find any Jira-related issue filed after this
-    // test started (by title keyword).
+    // Verify the agent called report_issue via session messages (tool call proof).
+    // Don't rely on a new DB row — dedup may have incremented an existing issue.
+    const msgs = await apiGet(`sessions/${firstSessionId}/messages`);
+    const parts = (msgs as Record<string, unknown[]>).data ?? (Array.isArray(msgs) ? msgs : []);
+    const toolCalled = parts.some((m: unknown) => {
+      const msg = m as Record<string, unknown>;
+      const ps = (msg.parts as Array<Record<string, unknown>>) ?? [];
+      return ps.some((p) => p.type === "tool" && String(p.tool ?? "").includes("report_issue"));
+    });
+    expect(toolCalled, "agent should have called report_issue when Jira MCP unavailable").toBe(true);
+
+    // Find the Jira issue (may be a deduped existing row — no recency filter needed)
     const issues = await getOpenIssues();
-    const cutoff = Date.now() - 90_000; // within last 90s
-    const filed = issues.find((i) =>
-      String(i.title).toLowerCase().includes("jira") &&
-      new Date(String(i.created_at)).getTime() > cutoff,
-    );
-    expect(filed, "agent should have filed an issue about missing Jira MCP without being told to").toBeDefined();
+    const filed = issues.find((i) => String(i.title).toLowerCase().includes("jira"));
+    expect(filed, "a Jira-related issue should exist").toBeDefined();
     jiraIssueTitle = filed!.title as string;
     console.log(`Agent filed issue: "${jiraIssueTitle}"`);
   }, TURN_TIMEOUT_MS + 30_000);
