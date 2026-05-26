@@ -27,6 +27,10 @@ export interface ApiSessionAssessment {
   evidence: unknown[];
   action_status: string;
   action_ref: string | null;
+  // Spawned reviewer LAP agent session that critiques this target session.
+  // The session IS the review — open it to read the agent's analysis.
+  // Null until the worker first decides the target needs a deeper review.
+  reviewer_session_id: string | null;
   checked_at: string;
   next_check_at: string | null;
   created_at: string;
@@ -44,6 +48,7 @@ interface AssessmentDraft {
   next_check_at: Date;
   action_status: "none" | "watching" | "queued" | "executed" | "failed";
   action_ref: string | null;
+  reviewer_session_id?: string | null;
 }
 
 type ReviewableSession = Prisma.SessionGetPayload<{
@@ -196,11 +201,10 @@ async function resolveReviewerAgentId(): Promise<string | null> {
   return row?.agent_id ?? null;
 }
 
-async function startReviewerRepairSession(
-  session: ReviewableSession,
-  draft: AssessmentDraft,
-  issueId: string,
-): Promise<string | null> {
+async function spawnReviewerSession(args: {
+  title: string;
+  prompt: string;
+}): Promise<string | null> {
   const reviewerAgentId = await resolveReviewerAgentId();
   if (!reviewerAgentId) return null;
 
@@ -208,6 +212,32 @@ async function startReviewerRepairSession(
     process.env.BASE_URL ||
     process.env.LAP_BASE_URL ||
     "http://localhost:3000";
+  const res = await fetch(
+    `${baseUrl.replace(/\/+$/, "")}/api/v1/managed_agents/agents/${encodeURIComponent(reviewerAgentId)}/session`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.MASTER_KEY}`,
+      },
+      body: JSON.stringify({
+        title: args.title,
+        initial_prompt: args.prompt,
+      }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(`reviewer session spawn failed: ${res.status} ${await res.text()}`);
+  }
+  const json = (await res.json()) as { id?: string };
+  return json.id ?? null;
+}
+
+async function startReviewerRepairSession(
+  session: ReviewableSession,
+  draft: AssessmentDraft,
+  issueId: string,
+): Promise<string | null> {
   const prompt = [
     "You are the platform reviewer agent. Autonomously investigate and fix this LAP session blocker.",
     "If the root cause is in the platform code, create a pull request with the fix.",
@@ -219,25 +249,55 @@ async function startReviewerRepairSession(
     `Linked reviewer issue: ${issueId}`,
   ].join("\n");
 
-  const res = await fetch(
-    `${baseUrl.replace(/\/+$/, "")}/api/v1/managed_agents/agents/${encodeURIComponent(reviewerAgentId)}/session`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${env.MASTER_KEY}`,
-      },
-      body: JSON.stringify({
-        title: `Reviewer repair: ${draft.blocker_type ?? draft.state}`,
-        initial_prompt: prompt,
-      }),
-    },
-  );
-  if (!res.ok) {
-    throw new Error(`reviewer repair session failed: ${res.status} ${await res.text()}`);
+  return spawnReviewerSession({
+    title: `Reviewer repair: ${draft.blocker_type ?? draft.state}`,
+    prompt,
+  });
+}
+
+// Stand up a reviewer session whose job is to critique — not repair — the
+// target. Different prompt, no linked issue. Called from the worker when an
+// assessment first lands in a concerning state and no prior critique session
+// exists, so the agent's transcript becomes the human-readable review.
+async function startReviewerCritiqueSession(
+  session: ReviewableSession,
+  draft: AssessmentDraft,
+): Promise<string | null> {
+  const prompt = [
+    "You are the LAP platform reviewer. Your job is to critique this LAP session and propose concrete improvements to the platform itself.",
+    "Read the linked session's transcript, pod logs, and sandbox state. Surface what the agent is doing well, what's blocking it, and which improvements would land the most reliability for LAP.",
+    "Frame the output as a critique a senior agent operator would write — specific, evidence-backed, opinionated.",
+    "Do not file code changes from this session; this is a read-only critique. Repair is handled by a separate reviewer flow.",
+    "",
+    reviewerActionBody(session, draft),
+  ].join("\n");
+
+  return spawnReviewerSession({
+    title: `Reviewer critique: ${draft.blocker_type ?? draft.state} (${session.session_id.slice(0, 8)})`,
+    prompt,
+  });
+}
+
+function needsCritique(state: AssessmentState): boolean {
+  return state === "off_track" || state === "blocked" || state === "failed";
+}
+
+// Spawn the critique session once per target-session and carry the id forward
+// across worker ticks. The reviewer session IS the review — re-spawning every
+// minute would create dozens of duplicate critique sessions.
+async function ensureCritiqueSession(
+  session: ReviewableSession,
+  draft: AssessmentDraft,
+  latest: SessionAssessment | undefined,
+): Promise<string | null> {
+  if (latest?.reviewer_session_id) return latest.reviewer_session_id;
+  if (!needsCritique(draft.state)) return null;
+  try {
+    return await startReviewerCritiqueSession(session, draft);
+  } catch (err) {
+    console.warn("reviewer critique spawn failed:", err);
+    return null;
   }
-  const json = (await res.json()) as { id?: string };
-  return json.id ?? null;
 }
 
 async function restartFailedSession(session: ReviewableSession): Promise<boolean> {
@@ -324,6 +384,7 @@ export function toApiSessionAssessment(
     evidence: Array.isArray(row.evidence) ? row.evidence : [],
     action_status: row.action_status,
     action_ref: row.action_ref,
+    reviewer_session_id: row.reviewer_session_id,
     checked_at: row.checked_at.toISOString(),
     next_check_at: row.next_check_at ? row.next_check_at.toISOString() : null,
     created_at: row.created_at.toISOString(),
@@ -508,11 +569,9 @@ export async function assessAndStoreSession(
     throw new Error(`session ${session_id} not found`);
   }
   const initialDraft = assessSessionRow(session);
-  const draft = await executeAutonomousAction(
-    session,
-    initialDraft,
-    session.assessments[0],
-  );
+  const latest = session.assessments[0];
+  const draft = await executeAutonomousAction(session, initialDraft, latest);
+  const reviewerSessionId = await ensureCritiqueSession(session, draft, latest);
   return prisma.sessionAssessment.create({
     data: {
       session_id,
@@ -525,6 +584,7 @@ export async function assessAndStoreSession(
       evidence: draft.evidence,
       action_status: draft.action_status,
       action_ref: draft.action_ref,
+      reviewer_session_id: reviewerSessionId,
       next_check_at: draft.next_check_at,
     },
   });
