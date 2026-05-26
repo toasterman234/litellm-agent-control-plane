@@ -168,6 +168,7 @@ model Session {
   agent               Agent               @relation(fields: [agent_id], references: [agent_id], onDelete: Cascade)
   integration_session IntegrationSession?
   messages            SessionMessage[]
+  assessments         SessionAssessment[]
 
   @@index([agent_id])
   @@index([status])
@@ -200,6 +201,33 @@ model SessionMessage {
   @@unique([session_id, seq])
   @@index([session_id, created_at])
   @@map("managed_agent_session_message")
+}
+
+// Latest and historical reviewer judgments for a session. The platform
+// reviewer polls active sessions on a fixed cadence and records whether
+// each run is still on track, slow-but-healthy, or blocked.
+model SessionAssessment {
+  assessment_id     String   @id @default(uuid())
+  session_id        String
+  state             String   @default("on_track") // on_track | slow_but_ok | off_track | blocked | failed
+  severity          String   @default("info")     // info | med | high
+  blocker_type      String?
+  diagnosis         String
+  recommended_action String?
+  confidence        Int      @default(50)
+  evidence          Json     @default("[]")
+  action_status     String   @default("none")     // none | watching | queued | executed | failed
+  action_ref        String?
+  checked_at        DateTime @default(now())
+  next_check_at     DateTime?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  session Session @relation(fields: [session_id], references: [session_id], onDelete: Cascade)
+
+  @@index([session_id, checked_at])
+  @@index([state, checked_at])
+  @@map("managed_agent_session_assessment")
 }
 
 // Pre-provisioned Fargate task waiting to be claimed by a session create.
