@@ -1327,11 +1327,21 @@ function ReviewerInlineCard({
           </span>
         )}
         {error && <span className="text-red-700 truncate">{error}</span>}
+        {assessment?.reviewer_session_id && (
+          <Link
+            href={`/sessions/${assessment.reviewer_session_id}`}
+            className="ml-auto inline-flex items-center gap-1 rounded border border-violet-200 bg-violet-50 px-2 py-1 text-violet-700 hover:bg-violet-100"
+            title="Open the reviewer agent session that critiqued this run"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            <span>Open critique</span>
+          </Link>
+        )}
         <button
           type="button"
           onClick={onCheckNow}
           disabled={loading}
-          className="ml-auto inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-muted-foreground hover:bg-background disabled:opacity-50"
+          className={`${assessment?.reviewer_session_id ? "" : "ml-auto"} inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-muted-foreground hover:bg-background disabled:opacity-50`}
         >
           {loading ? (
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
