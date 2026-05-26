@@ -38,6 +38,9 @@ const EXECUTE_TIMEOUT_MS = 180_000;
 
 const USE_DIRECT = !ENV_SESSION_ID;
 const sandboxes = new Map();
+// Sandboxes provisioned via the platform path (session_id passed at provision time).
+// Keyed by sandbox name → platform session_id so execute/read_file can route correctly.
+const sandboxSessionIds = new Map();
 
 const directMode = USE_DIRECT ? (USE_DAYTONA ? "direct-daytona" : "direct-e2b") : "platform";
 console.error(`[sandbox-mcp] mode=${directMode} template=${E2B_TEMPLATE} vault=${VAULT_URL ? "set" : "none"}`);
@@ -47,11 +50,12 @@ const server = new Server({ name: "opencode-sandbox", version: "1.0.0" }, { capa
 const TOOLS = [
   {
     name: "provision",
-    description: "Provision a new sandbox environment. Returns a confirmation message when the sandbox is ready.",
+    description: "Provision a new sandbox environment. Returns a confirmation message when the sandbox is ready. Always pass session_id from <lap_session_id> in your context so the platform can inject your agent's env vars (e.g. GITHUB_TOKEN) into the sandbox.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Label for the sandbox — used in subsequent execute() calls as sandbox_name. Use 'main' if unsure." },
+        session_id: { type: "string", description: "LAP session ID from <lap_session_id> in your context — required for agent env vars to be available in the sandbox." },
       },
       required: ["name"],
     },
@@ -127,8 +131,10 @@ async function getDaytona() {
   return new Daytona({ apiKey: DAYTONA_API_KEY, ...(DAYTONA_API_URL ? { apiUrl: DAYTONA_API_URL } : {}) });
 }
 
-async function provision({ name, project_id }) {
-  if (USE_DIRECT) {
+async function provision({ name, project_id, session_id: callSessionId }) {
+  const effectiveSid = ENV_SESSION_ID || callSessionId;
+  // Use platform path when a session_id is available and LAP_BASE_URL is set.
+  if (USE_DIRECT && !(effectiveSid && BASE)) {
     if (USE_DAYTONA) {
       const existing = sandboxes.get(name);
       if (existing) {
@@ -171,13 +177,14 @@ async function provision({ name, project_id }) {
     }
   }
   try {
-    const res = await fetch(`${BASE}/api/v1/managed_agents/sessions/${ENV_SESSION_ID}/sandbox/provision`, {
+    const res = await fetch(`${BASE}/api/v1/managed_agents/sessions/${effectiveSid}/sandbox/provision`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
       body: JSON.stringify({ name, project_id }),
     });
     const json = await res.json();
     if (!res.ok) return textResult(`provision failed: ${json.error ?? `HTTP ${res.status}`}`, true);
+    if (callSessionId) sandboxSessionIds.set(name, callSessionId);
     return textResult(json.message ?? "sandbox provisioned");
   } catch (e) {
     return textResult(`provision error: ${e instanceof Error ? e.message : String(e)}`, true);
@@ -185,7 +192,8 @@ async function provision({ name, project_id }) {
 }
 
 async function execute({ sandbox_name, cmd }) {
-  if (USE_DIRECT) {
+  const platformSid = ENV_SESSION_ID || sandboxSessionIds.get(sandbox_name);
+  if (USE_DIRECT && !platformSid) {
     const sandbox = sandboxes.get(sandbox_name);
     if (!sandbox) return textResult(`execute failed: no sandbox "${sandbox_name}" — call provision first`, true);
     if (USE_DAYTONA) {
@@ -211,7 +219,7 @@ async function execute({ sandbox_name, cmd }) {
     }
   }
   try {
-    const res = await fetch(`${BASE}/api/v1/managed_agents/sessions/${ENV_SESSION_ID}/sandbox/execute`, {
+    const res = await fetch(`${BASE}/api/v1/managed_agents/sessions/${platformSid}/sandbox/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
       body: JSON.stringify({ sandbox_name, cmd }),
@@ -227,7 +235,8 @@ async function execute({ sandbox_name, cmd }) {
 const READ_FILE_MAX_BYTES = 256 * 1024;
 
 async function readFile({ sandbox_name, path }) {
-  if (USE_DIRECT) {
+  const platformSid = ENV_SESSION_ID || sandboxSessionIds.get(sandbox_name);
+  if (USE_DIRECT && !platformSid) {
     const sandbox = sandboxes.get(sandbox_name);
     if (!sandbox) return textResult(`read_file failed: no sandbox "${sandbox_name}" — call provision first`, true);
     if (USE_DAYTONA) {
@@ -252,7 +261,7 @@ async function readFile({ sandbox_name, path }) {
     }
   }
   try {
-    const res = await fetch(`${BASE}/api/v1/managed_agents/sessions/${ENV_SESSION_ID}/sandbox/read-file`, {
+    const res = await fetch(`${BASE}/api/v1/managed_agents/sessions/${platformSid}/sandbox/read-file`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
       body: JSON.stringify({ sandbox_name, path }),
