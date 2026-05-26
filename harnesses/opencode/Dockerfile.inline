@@ -99,7 +99,7 @@ FROM debian:bookworm-slim AS installer
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://opencode.ai/install | bash
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --version 1.14.41
 RUN find /root/.opencode -maxdepth 2 -type d -name 'cache' -exec rm -rf {} + 2>/dev/null || true \
  && find /root/.opencode -maxdepth 2 -name '*.zip' -delete 2>/dev/null || true \
  && find /root/.opencode -maxdepth 2 -name '*.tar*' -delete 2>/dev/null || true
