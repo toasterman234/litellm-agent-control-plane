@@ -274,7 +274,14 @@ export const UpdateAgentBody = z.object({
   /** Replace per-credential host bindings. See CreateAgentBody.env_var_hosts. */
   env_var_hosts: envVarHostsSchema,
   /** Replace the full sandbox_files array. Used to update setup.sh and other seeded files. */
-  sandbox_files: z.array(SandboxFileSpecSchema).optional(),
+  sandbox_files: z
+    .array(SandboxFileSpecSchema)
+    .max(SANDBOX_FILES_MAX_COUNT, `sandbox_files: max ${SANDBOX_FILES_MAX_COUNT} files`)
+    .refine(
+      (files) => (files as SandboxFileSpec[]).reduce((sum, f) => sum + f.content.length, 0) <= SANDBOX_FILES_MAX_TOTAL_B64,
+      { message: `sandbox_files: total base64 size must be ≤ 10 MB` },
+    )
+    .optional(),
 });
 export type UpdateAgentBody = z.infer<typeof UpdateAgentBody>;
 
@@ -843,7 +850,13 @@ export interface ServerEnv {
   EXECUTOR_SECRET?: string;
   E2B_API_KEY?: string;
   E2B_TEMPLATE: string;
-  SANDBOX_CHOICE?: "e2b";
+  DAYTONA_API_KEY?: string;
+  DAYTONA_API_URL?: string;
+  DAYTONA_SNAPSHOT?: string;
+  DAYTONA_IMAGE?: string;
+  DAYTONA_MEMORY_GIB?: number;
+  DAYTONA_CPU?: number;
+  SANDBOX_CHOICE?: "e2b" | "daytona";
   VAULT_URL?: string;
   VAULT_PROXY_TOKEN?: string;
   VAULT_CA_CRT?: string;
@@ -864,6 +877,8 @@ export interface ServerEnv {
   ARTIFACT_STORAGE?: "s3";
   AWS_S3_BUCKET?: string;
   AWS_REGION: string;
+  // Custom S3 endpoint for S3-compatible providers (e.g. Cloudflare R2).
+  AWS_S3_ENDPOINT?: string;
 
   /**
    * All process.env entries whose key starts with `CONTAINER_ENV_`, with

@@ -104,6 +104,7 @@ function startChild() {
   const child = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(CHILD_PORT)], {
     stdio: "inherit",
     env: process.env,
+    cwd: process.env.REPO_DIR || import.meta.dirname,
   });
   child.on("exit", (code) => { log(`opencode serve exited (${code}) — shutting down`); process.exit(code ?? 1); });
 }
@@ -111,7 +112,12 @@ function startChild() {
 async function waitChild() {
   for (let i = 0; i < 120; i++) {
     const ok = await new Promise((r) => {
-      const rq = http.get(UP + "/", (res) => { res.resume(); r(res.statusCode === 200); });
+      // Ready = the child answers HTTP at all. opencode is installed unpinned, and
+      // its `/` route's status code has drifted across versions (200 -> 404/redirect);
+      // requiring exactly 200 here silently wedged the deploy ("No open ports on
+      // 0.0.0.0") because the adapter never reached server.listen(). Any HTTP
+      // response means opencode is up and serving, which is all we need.
+      const rq = http.get(UP + "/", (res) => { res.resume(); r((res.statusCode ?? 0) > 0); });
       rq.on("error", () => r(false));
     });
     if (ok) return true;
