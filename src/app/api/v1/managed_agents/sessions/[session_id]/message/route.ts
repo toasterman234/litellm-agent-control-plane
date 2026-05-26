@@ -277,6 +277,7 @@ export async function POST(req: Request, ctx: RouteContext) {
       where: { session_id },
     });
     const isInline = cached.harness_id === HARNESS_OPENCODE || cached.harness_id === HARNESS_OPENCODE_BRAIN_INLINE;
+    console.log(`[message] session=${session_id} harness=${cached.harness_id} isInline=${isInline} priorTurns=${priorTurns}`);
     if (priorTurns === 0) {
       const agentRow = await prisma.agent.findUnique({
         where: { agent_id: cached.agent_id },
@@ -327,6 +328,12 @@ export async function POST(req: Request, ctx: RouteContext) {
       parts,
     });
 
+    // Debug: log what we're sending to the harness
+    if (isInline) {
+      const lastPart = parts.filter(p => p.type === "text").at(-1);
+      const lastTxt = (lastPart as {text?:string})?.text ?? "";
+      console.log(`[inline-inject] session=${session_id} last_text_tail=${JSON.stringify(lastTxt.slice(-200))}`);
+    }
     let response: HarnessMessageResponse;
     console.log(`[message] session=${session_id} sandbox_url=${cached.sandbox_url} harness_session_id=${cached.harness_session_id}`);
     const hb = startHeartbeat(session_id, cached.sandbox_url, cached.harness_session_id);
