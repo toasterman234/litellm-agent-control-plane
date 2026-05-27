@@ -43,6 +43,7 @@ import { putCachedSession } from "@/server/sessionCache";
 import {
   appendUserMessage,
   completeAssistantMessage,
+  markUserMessageFailed,
 } from "@/server/sessionStore";
 import {
   expandMessage,
@@ -533,6 +534,8 @@ async function runInitialPrompt(
     void snapshotThreadToHistory(session_id, sandbox_url, harness_session_id);
   }, INITIAL_TASK_HEARTBEAT_MS);
 
+  // Declared outside try so the catch block can reference it for cleanup.
+  let userMsg: { message_id: string; seq: number } | null = null;
   try {
     // Build Claude-format multimodal parts when attachments are present.
     // Text part first, then each image as a base64 source — matches the
@@ -562,7 +565,7 @@ async function runInitialPrompt(
     );
     // Record the initial prompt in the durable log *before* sending so the
     // first turn is replayable if the sandbox dies before the agent replies.
-    const userMsg = await appendUserMessage({
+    userMsg = await appendUserMessage({
       session_id,
       harness_session_id,
       parts: parts as import("@/server/types").HarnessMessagePart[],
@@ -592,9 +595,112 @@ async function runInitialPrompt(
     await snapshotThreadToHistory(session_id, sandbox_url, harness_session_id);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error(
-      `initial_prompt send failed: session_id=${session_id} reason=${reason}`,
-    );
+    const isFetchError =
+      (err instanceof TypeError && err.message.includes("fetch")) ||
+      reason === "fetch failed";
+
+    if (isFetchError) {
+      console.log(
+        `[runInitialPrompt] fetch failed, attempting recovery... session_id=${session_id}`,
+      );
+      try {
+        // Re-resolve MCP servers so the replacement session has the same tool
+        // surface as the original. Best-effort — a failure here means tools are
+        // missing but the turn can still proceed.
+        const rawMcpServerIds = Array.isArray(agent.mcp_servers)
+          ? (agent.mcp_servers as unknown[]).filter((v): v is string => typeof v === "string")
+          : [];
+        const { specs: recoveryMcpServers } = await resolveAgentMcpServers(rawMcpServerIds).catch(() => ({ specs: [] }));
+        const newHarnessSessionId = await harnessCreateSession({
+          sandbox_url,
+          title: "recovery",
+          sandbox_tools: true,
+          agent_id: agent.agent_id,
+          mcp_servers: recoveryMcpServers,
+          platform_session_id: session_id,
+        });
+        await prisma.session.update({
+          where: { session_id },
+          data: { harness_session_id: newHarnessSessionId },
+        });
+        const parts = prependAgentSystemPrompt(
+          agent.prompt,
+          initial_attachments && initial_attachments.length > 0
+            ? [
+                ...(initial_prompt
+                  ? [{ type: "text", text: initial_prompt }]
+                  : []),
+                ...initial_attachments.map((a) => ({
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: a.mime_type,
+                    data: a.base64,
+                  },
+                })),
+              ]
+            : expandMessage(initial_prompt),
+          session_id,
+        );
+        // Mark the first (failed) user message so it doesn't get replayed as
+        // a duplicate on the next recovery cycle.
+        if (userMsg?.message_id) {
+          await markUserMessageFailed(userMsg.message_id);
+        }
+        let retryUserMsg: { message_id: string; seq: number } | null = null;
+        try {
+          retryUserMsg = await appendUserMessage({
+            session_id,
+            harness_session_id: newHarnessSessionId,
+            parts: parts as import("@/server/types").HarnessMessagePart[],
+          });
+          const retryResponse = await harnessSendMessage({
+            sandbox_url,
+            harness_session_id: newHarnessSessionId,
+            model: agent.model,
+            parts,
+          });
+          await prisma.session.update({
+            where: { session_id },
+            data: {
+              response: retryResponse as unknown as Prisma.InputJsonValue,
+              last_seen_at: new Date(),
+            },
+          });
+          void completeAssistantMessage({
+            session_id,
+            user_message_id: retryUserMsg?.message_id ?? null,
+            harness_session_id: newHarnessSessionId,
+            response: retryResponse,
+          });
+          await snapshotThreadToHistory(
+            session_id,
+            sandbox_url,
+            newHarnessSessionId,
+          );
+          return;
+        } catch (sendErr) {
+          // Mark the retry message failed so it isn't replayed as a duplicate.
+          if (retryUserMsg?.message_id) {
+            await markUserMessageFailed(retryUserMsg.message_id).catch(() => {});
+          }
+          throw sendErr;
+        }
+      } catch (recoveryErr) {
+        const recoveryReason =
+          recoveryErr instanceof Error
+            ? recoveryErr.message
+            : String(recoveryErr);
+        console.error(
+          `[runInitialPrompt] recovery failed: session_id=${session_id} reason=${recoveryReason}`,
+        );
+      }
+    } else {
+      console.error(
+        `initial_prompt send failed: session_id=${session_id} reason=${reason}`,
+      );
+    }
+
     // Best-effort persist. The session itself stays `ready` — the sandbox
     // is healthy; only the initial agent task failed. The UI can surface
     // failure_reason alongside an empty response.
