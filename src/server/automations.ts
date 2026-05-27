@@ -298,7 +298,11 @@ export async function reconcileAutomationRuns(): Promise<AutomationRunReconcileR
       } else if (s.status === "failed" || s.status === "dead") {
         status = "failed";
         error = s.failure_reason ?? `session ${s.status}`;
-      } else if (s.failure_reason !== null) {
+      } else if (s.failure_reason !== null && s.status !== "ready" && s.status !== "creating") {
+        // Only fail on failure_reason when the session itself is terminal.
+        // A session that's still ready/creating may have a stale failure_reason
+        // from a transient error (e.g. 30-min message timeout) while the agent
+        // keeps running — don't let that prematurely fail the automation run.
         status = "failed";
         error = s.failure_reason;
       }

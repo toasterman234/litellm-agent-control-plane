@@ -596,12 +596,34 @@ async function runInitialPrompt(
     await snapshotThreadToHistory(session_id, sandbox_url, harness_session_id);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    // AbortSignal.timeout fires after 30 min as a DOMException(TimeoutError),
+    // which undici wraps in TypeError("fetch failed") with cause.name="TimeoutError".
+    // Treat as non-recoverable: the harness kept running after the HTTP disconnect,
+    // so the agent is still working — don't create a duplicate session, don't mark
+    // failure_reason (which would cause reconcileAutomationRuns to mark the run failed).
+    const isTimeoutError =
+      (err instanceof Error && err.name === "TimeoutError") ||
+      (err instanceof Error &&
+        (err as { cause?: unknown }).cause instanceof Error &&
+        ((err as { cause?: unknown }).cause as Error).name === "TimeoutError");
     const isFetchError =
-      (err instanceof TypeError && err.message.includes("fetch")) ||
-      reason === "fetch failed";
+      !isTimeoutError &&
+      ((err instanceof TypeError && err.message.includes("fetch")) ||
+        reason === "fetch failed");
     // Also recover on dead-session errors: opencode returns 200+empty when
     // the harness_session_id is unknown after a pod restart.
     const isRecoverable = isFetchError || isDeadSessionError(err);
+
+    if (isTimeoutError) {
+      // 30-min timeout fired but harness kept the agent running. Snapshot whatever
+      // progress exists and exit — the automation reconciler will wait for a reply
+      // or time the run out at RUN_TIMEOUT_MS.
+      console.warn(
+        `[runInitialPrompt] message timeout after 30 min — agent still running, not marking failed: session_id=${session_id}`,
+      );
+      void snapshotThreadToHistory(session_id, sandbox_url, harness_session_id);
+      return; // finally{clearInterval} still runs
+    }
 
     if (isRecoverable) {
       console.log(
