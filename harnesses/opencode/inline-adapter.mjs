@@ -194,16 +194,19 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Normalize model field: opencode's config always uses provider "litellm"
-    // (regardless of backend). Strip any "provider/" prefix from modelID so
-    // "anthropic/claude-opus-4-7" becomes providerID="litellm" + modelID="claude-opus-4-7".
+    // Normalize model field: split "anthropic/claude-opus-4-7" into
+    // providerID="anthropic" + modelID="claude-opus-4-7" so opencode's
+    // built-in provider lookup succeeds. Bare names (no slash) keep providerID
+    // unchanged so the litellm gateway path still works.
     let forwardBody = raw;
     try {
       const b = JSON.parse(raw);
       if (b && b.model && typeof b.model.modelID === "string") {
         const slash = b.model.modelID.indexOf("/");
-        if (slash > 0) b.model.modelID = b.model.modelID.slice(slash + 1);
-        b.model.providerID = "litellm";
+        if (slash > 0) {
+          b.model.providerID = b.model.modelID.slice(0, slash);
+          b.model.modelID = b.model.modelID.slice(slash + 1);
+        }
         forwardBody = JSON.stringify(b);
       }
     } catch {}
