@@ -22,7 +22,7 @@ import type {
 // the model invokes tools and reads files, so callers should bump this on
 // the message path (or the harness will end up disconnected mid-stream).
 const DEFAULT_CREATE_TIMEOUT_MS = 60_000;
-const DEFAULT_MESSAGE_TIMEOUT_MS = 600_000;
+const DEFAULT_MESSAGE_TIMEOUT_MS = 1_800_000; // 30 min — opus-4-7 with thinking can run long
 
 export class HarnessHttpError extends Error {
   constructor(
