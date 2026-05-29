@@ -3,7 +3,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/Nkxw3rm3EE)
 
 > [!WARNING]
-> **Deprecated:** This project is deprecated in favor of [`lite-harness`](https://github.com/LiteLLM-Labs/lite-harness). Please use `lite-harness` for new development.
+> **Harness Work:** Harness work is in [`lite-harness`](https://github.com/LiteLLM-Labs/lite-harness). Please use `lite-harness` for new development.
 
 # LiteLLM Agent Platform
 
