@@ -58,8 +58,6 @@ import {
   getSession,
   getSessionAssessment,
   listSkills,
-  listSessionMessages,
-  sendMessageStream,
 } from "@/ui/lib/api";
 import { type AgentMessage, type PermissionRequest } from "@/shared/agent-state";
 import { AgentAvatar } from "@/ui/components/agent-avatar";
@@ -889,108 +887,68 @@ function MainPanel({
             </>
           )}
         </div>
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <button
-            type="button"
-            onClick={() => session && setReviewerOpen(!reviewerOpen)}
-            disabled={!session}
-            title="Reviewer — one-minute on/off-track assessment for this session"
-            className={`inline-flex items-center gap-1.5 text-[12px] border rounded px-2 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-              reviewerOpen
-                ? "bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
-                : "border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <Stethoscope className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">
-              Reviewer{assessment ? `: ${formatAssessmentState(assessment.state)}` : ""}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => session && setVaultOpen(!vaultOpen)}
-            disabled={!session}
-            title="Vault — credential interception log for this session"
-            className={`inline-flex items-center gap-1.5 text-[12px] border rounded px-2 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-              vaultOpen
-                ? "bg-violet-50 border-violet-200 text-violet-700 hover:bg-violet-100"
-                : "border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Vault</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => session && setLogOpen(!logOpen)}
-            disabled={!session}
-            title="Session Log — durable event timeline (survives sandbox restarts)"
-            className={`inline-flex items-center gap-1.5 text-[12px] border rounded px-2 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-              logOpen
-                ? "bg-violet-50 border-violet-200 text-violet-700 hover:bg-violet-100"
-                : "border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <ScrollText className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Log</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => session && setInspectorOpen(!inspectorOpen)}
-            disabled={!session}
-            title="Inspector — tail the platform envelope + raw harness bus for this session"
-            className={`inline-flex items-center gap-1.5 text-[12px] border rounded px-2 py-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-              inspectorOpen
-                ? "bg-violet-50 border-violet-200 text-violet-700 hover:bg-violet-100"
-                : "border-border text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <Activity className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Inspect</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => session && setDiagnoseOpen(true)}
-            disabled={!session}
-            title="Diagnose — fetch pod, service, node, warm-pool, and harness-probe state"
-            className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground border border-border rounded px-2 py-1 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <Stethoscope className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Diagnose</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleRestart}
-            disabled={!canRestart || restarting}
-            title={
-              statusLabel === "creating"
-                ? "Sandbox is still spinning up"
-                : isReady
-                  ? "Restart sandbox (replays history)"
-                  : "Restart sandbox"
-            }
-            className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground border border-border rounded px-2 py-1 hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {restarting ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <RotateCw className="w-3.5 h-3.5" />
-            )}
-            <span className="hidden sm:inline">
-              {restarting ? "Restarting…" : "Restart"}
-            </span>
-          </button>
+        <div className="flex items-center gap-1.5 text-muted-foreground">
           <DropdownMenu>
             <DropdownMenuTrigger
               type="button"
               className="p-1.5 hover:bg-muted rounded"
+              title="Session actions"
             >
               <MoreHorizontal className="w-4 h-4" />
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent align="end" className="min-w-44">
+              <DropdownMenuItem
+                disabled={!session}
+                onSelect={() => session && setReviewerOpen(!reviewerOpen)}
+              >
+                <Stethoscope className="mr-1 size-3.5" />
+                Reviewer{assessment ? `: ${formatAssessmentState(assessment.state)}` : ""}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!session}
+                onSelect={() => session && setVaultOpen(!vaultOpen)}
+              >
+                <ShieldCheck className="mr-1 size-3.5" />
+                Vault
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!session}
+                onSelect={() => session && setLogOpen(!logOpen)}
+              >
+                <ScrollText className="mr-1 size-3.5" />
+                Session log
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!session}
+                onSelect={() => session && setInspectorOpen(!inspectorOpen)}
+              >
+                <Activity className="mr-1 size-3.5" />
+                Inspect
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!session}
+                onSelect={() => session && setDiagnoseOpen(true)}
+              >
+                <Stethoscope className="mr-1 size-3.5" />
+                Diagnose
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!canRestart || restarting}
+                onSelect={() => {
+                  if (canRestart && !restarting) handleRestart();
+                }}
+              >
+                {restarting ? (
+                  <Loader2 className="mr-1 size-3.5 animate-spin" />
+                ) : (
+                  <RotateCw className="mr-1 size-3.5" />
+                )}
+                {restarting ? "Restarting..." : "Restart sandbox"}
+              </DropdownMenuItem>
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"
                 onSelect={() => setDeleteSessionOpen(true)}
+                disabled={!session}
               >
                 <Trash2 className="mr-2 size-3.5" />
                 Delete session
@@ -2383,7 +2341,7 @@ function Composer({
     ? "Sandbox not ready yet…"
     : hasInProgress
       ? "Queue a follow up"
-      : "Add a follow up — type / to reference a skill";
+      : "Add a follow up";
 
   // Stage a clipboard / drop / file-picker file onto the attachments list.
   // Validates count + MIME + size client-side so the user gets immediate
@@ -2588,7 +2546,7 @@ function Composer({
           {error ? (
             <span className="text-red-600">{error}</span>
           ) : (
-            currentModel || "Enter to send · Shift+Enter for newline · paste or drag images"
+            currentModel || "Enter to send · Shift+Enter for newline"
           )}
           {activeSkill && (
             <span className="flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 dark:border-blue-800 dark:bg-blue-950">
