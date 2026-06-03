@@ -1954,7 +1954,7 @@ function PartBlock({ part }: { part: HarnessMessagePart }) {
   if (t === "reasoning" || t === "thinking") {
     const text = typeof part.text === "string" ? part.text : "";
     if (!text) return null;
-    return <ReasoningBlock text={text} />;
+    return <ThinkingBlock text={text} />;
   }
   if (t === "tool") {
     return <ToolBlock part={part} />;
@@ -1974,23 +1974,31 @@ function PartBlock({ part }: { part: HarnessMessagePart }) {
   return null;
 }
 
-function ReasoningBlock({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  const preview = text.length > 360 ? text.slice(0, 360) + "…" : text;
+function ThinkingBlock({ text }: { text: string }) {
+  const [open, setOpen] = useState(true);
   return (
-    <div className="border-l-2 border-border pl-3 text-[13px] text-muted-foreground italic leading-relaxed">
+    <div className="rounded-md border border-border bg-muted/30 text-[13px] text-muted-foreground overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-start gap-1 text-left hover:text-foreground"
+        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left hover:bg-muted/60 hover:text-foreground transition-colors"
       >
         <ChevronDown
-          className={`w-3 h-3 mt-1 shrink-0 transition-transform ${
+          className={`w-3 h-3 shrink-0 transition-transform ${
             open ? "" : "-rotate-90"
           }`}
         />
-        <span className="whitespace-pre-wrap">{open ? text : preview}</span>
+        <span className="font-medium">Thinking</span>
+        <span className="text-muted-foreground/70">·</span>
+        <span className="text-[11px] text-muted-foreground/80">
+          {open ? "click to collapse" : "click to expand"}
+        </span>
       </button>
+      {open && (
+        <div className="border-t border-border px-3 py-3 italic leading-relaxed whitespace-pre-wrap">
+          {text || "No thinking content available"}
+        </div>
+      )}
     </div>
   );
 }
@@ -2050,7 +2058,7 @@ function ToolBlock({ part }: { part: HarnessMessagePart }) {
     ? status === "running"
       ? "spawning sub agent"
       : "sub agent"
-    : toolName;
+    : formatToolName(toolName);
   const hasDetails = isTask
     ? subParts.length > 0 || output !== undefined
     : input !== undefined || output !== undefined || errorOut !== undefined;
@@ -2064,28 +2072,29 @@ function ToolBlock({ part }: { part: HarnessMessagePart }) {
   const StatusIcon =
     status === "completed" ? Check : status === "error" ? X : Loader2;
 
-  // One clean clickable card per tool call (Cursor-style): collapsed by
-  // default, click to reveal input/output — or, for a subagent, its full work.
+  // SDK-style cards from the old fork: one compact selectable row per tool
+  // call, with details tucked behind a chevron.
   return (
-    <div className="border border-border rounded-md bg-muted/40 text-[13px] overflow-hidden">
+    <div className="rounded-md border border-border bg-muted/15 text-[13px] overflow-hidden">
       <button
         type="button"
         onClick={() => hasDetails && setOpen((v) => !v)}
-        className={`w-full flex items-center gap-2 px-3 py-2 text-left min-w-0 ${
-          hasDetails ? "hover:bg-muted cursor-pointer" : "cursor-default"
+        className={`w-full flex items-center gap-2 px-3 py-2 text-left min-w-0 transition-colors ${
+          hasDetails ? "hover:bg-muted/60 cursor-pointer" : "cursor-default"
         }`}
       >
         <Wrench className="w-3 h-3 text-muted-foreground shrink-0" />
         <span className="mono text-foreground shrink-0">{label}</span>
-        {desc && (
-          <span className="mono text-muted-foreground truncate">{desc}</span>
-        )}
         <StatusIcon
           className={`w-3 h-3 shrink-0 ${statusColor} ${status === "running" ? "animate-spin" : ""}`}
         />
         <span className={`mono text-[11px] shrink-0 ${statusColor}`}>
           {status}
         </span>
+        {desc && (
+          <span className="mono text-muted-foreground truncate">{desc}</span>
+        )}
+        <span className="flex-1" aria-hidden />
         {hasDetails && (
           <ChevronDown
             className={`ml-auto w-3 h-3 shrink-0 text-muted-foreground transition-transform ${
@@ -2097,7 +2106,7 @@ function ToolBlock({ part }: { part: HarnessMessagePart }) {
 
       {open && isTask && (
         // The subagent's own steps + final output, nested under the card.
-        <div className="border-t border-border border-l-2 border-l-amber-300/60 px-3 py-2 flex flex-col gap-2">
+        <div className="border-t border-border border-l-2 border-l-amber-400/70 bg-muted/20 px-3 py-2 flex flex-col gap-2">
           {subParts.length > 0 ? (
             subParts.map((p, i) => (
               <PartBlock key={i} part={p as unknown as HarnessMessagePart} />
@@ -2113,7 +2122,7 @@ function ToolBlock({ part }: { part: HarnessMessagePart }) {
       )}
 
       {open && !isTask && hasDetails && (
-        <div className="border-t border-border px-3 py-2 flex flex-col gap-2">
+        <div className="border-t border-border bg-muted/20 px-3 py-2 flex flex-col gap-2">
           {input !== undefined && <ToolKv label="input" value={input} />}
           {output !== undefined && <ToolKv label="output" value={output} />}
           {errorOut !== undefined && <ToolKv label="error" value={errorOut} />}
@@ -2136,6 +2145,15 @@ function ToolKv({ label, value }: { label: string; value: unknown }) {
       </pre>
     </div>
   );
+}
+
+function formatToolName(toolName: string): string {
+  if (!toolName) return "Tool";
+  return toolName
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }
 
 // A permission the agent (or subagent) is blocked on. opencode asks before
