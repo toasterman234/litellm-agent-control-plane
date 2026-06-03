@@ -7,7 +7,7 @@
 //   1. ttyUrl (non-null): platform-provided browser-accessible endpoint.
 //      - IN_CLUSTER deployments: a relative path like
 //        /api/v1/managed_agents/sessions/{id}/tty that the platform's TCP
-//        proxy (server-proxy.mjs) pipes to the cluster-internal sandbox pod.
+//        proxy pipes to the cluster-internal sandbox pod.
 //      - Absolute ws(s):// URL for any other pre-resolved case.
 //   2. sandboxUrl (non-null): local dev — derive ws URL directly from the
 //      NodePort sandbox URL (http://host:port → ws://host:port/tty).

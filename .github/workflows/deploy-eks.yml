@@ -144,24 +144,24 @@ jobs:
 
       - name: Build Docker image
         run: |
-          SP_SHA=$(sha256sum server-proxy-v2.mjs | awk '{print $1}')
+          SP_SHA=$(sha256sum src/server/entrypoints/server-proxy.mjs | awk '{print $1}')
           docker build --no-cache \
             --build-arg GIT_SHA="${{ github.sha }}" \
             --build-arg SERVER_PROXY_SHA256="$SP_SHA" \
             -t "$IMAGE" .
 
-      - name: Verify server-proxy.mjs in image
+      - name: Verify server proxy in image
         run: |
-          src_hash=$(sha256sum server-proxy-v2.mjs | awk '{print $1}')
-          img_hash=$(docker run --rm "$IMAGE" sh -c "sha256sum /app/server-proxy-v2.mjs | awk '{print \$1}'")
+          src_hash=$(sha256sum src/server/entrypoints/server-proxy.mjs | awk '{print $1}')
+          img_hash=$(docker run --rm "$IMAGE" sh -c "sha256sum /app/src/server/entrypoints/server-proxy.mjs | awk '{print \$1}'")
           echo "source sha256: $src_hash"
           echo "image  sha256: $img_hash"
           if [ "$src_hash" != "$img_hash" ]; then
-            echo "ERROR: server-proxy.mjs in image does not match source — aborting"
-            docker run --rm "$IMAGE" head -5 /app/server-proxy.mjs
+            echo "ERROR: server proxy in image does not match source — aborting"
+            docker run --rm "$IMAGE" head -5 /app/src/server/entrypoints/server-proxy.mjs
             exit 1
           fi
-          echo "OK: server-proxy.mjs verified"
+          echo "OK: server proxy verified"
 
       - name: Push image (SHA tag)
         run: docker push "$IMAGE"

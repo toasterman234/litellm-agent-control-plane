@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// server-proxy.mjs
+// src/server/entrypoints/server-proxy.mjs
 //
 // TCP-level reverse proxy that runs in front of the Next.js standalone
 // server. It intercepts WebSocket upgrade requests bound for
@@ -16,7 +16,7 @@
 // HARNESS_AUTH_TOKEN. The token is forwarded as-is to the sandbox, which
 // performs its own constant-time check.
 //
-// Startup: CMD ["sh", "-c", "... && node src/server/server-proxy.mjs"]
+// Startup: CMD ["sh", "-c", "... && node src/server/entrypoints/server-proxy.mjs"]
 // Next.js is spawned as a child process on NEXT_PORT.
 
 import { connect } from "net";

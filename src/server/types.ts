@@ -610,7 +610,7 @@ export interface ApiSession {
   harness_session_id: string | null;
   // Browser-accessible WebSocket base URL for TUI harnesses.
   // - IN_CLUSTER deployments: a relative path routed through the platform's
-  //   TCP proxy (server-proxy.mjs) so the browser never dials the
+  //   TCP proxy so the browser never dials the
   //   cluster-internal sandbox DNS directly.
   // - Local dev (not IN_CLUSTER): null — the session view derives the URL
   //   from sandbox_url (the NodePort address the browser can reach).
@@ -1270,7 +1270,7 @@ export function toApiSession(
   // tty_url: browser-accessible WS base URL for TUI harnesses.
   // IN_CLUSTER: sandbox_url is cluster-internal (*.svc.cluster.local) and
   // unreachable from the browser. Return a relative path that the platform's
-  // TCP proxy (server-proxy.mjs) handles by piping raw TCP to the sandbox.
+  // TCP proxy handles by piping raw TCP to the sandbox.
   // Not IN_CLUSTER (local dev): sandbox_url is a NodePort address the browser
   // can reach directly; return null so the session view derives it client-side.
   const ttyUrl: string | null = (() => {

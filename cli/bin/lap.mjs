@@ -435,7 +435,7 @@ async function openAgent(args) {
 
   // Prefer session.tty_url when the platform provides it — that's a
   // platform-served route (e.g. /api/v1/managed_agents/sessions/<id>/tty
-  // proxied by server-proxy.mjs) that's reachable over the same public
+  // proxied by the platform server proxy) that's reachable over the same public
   // ingress as the rest of the API. Fall back to sandbox_url + /tty for
   // older platforms / local dev where the sandbox is directly reachable.
   const wsUrl = deriveTtyUrl(cfg, session);
@@ -896,7 +896,7 @@ function attachPty(cfg, sid, wsUrl, ttyToken) {
     // Authorization) on WebSocket upgrade requests, so a header-only auth
     // gets a 401 from behind those load balancers — verified against the
     // production EKS ELB ingress, where the header form was rejected but
-    // `?token=` succeeded with HTTP 101. The harness and server-proxy.mjs
+    // `?token=` succeeded with HTTP 101. The harness and platform proxy
     // both already accept either form, so sending both is safe and works
     // whether the path goes through an ALB or not.
     const urlWithToken = ttyToken
