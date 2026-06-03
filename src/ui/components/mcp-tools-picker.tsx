@@ -31,13 +31,21 @@ interface McpToolsPickerProps {
 export function McpToolsPicker({ value, onChange, onToolTotals, disabled }: McpToolsPickerProps) {
   const [mcps, setMcps] = useState<McpRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [expandedServers, setExpandedServers] = useState<Set<string>>(new Set());
   const [serverTools, setServerTools] = useState<Map<string, ServerToolsState>>(new Map());
 
   useEffect(() => {
     listMcps()
-      .catch(() => [] as McpRow[])
-      .then(setMcps)
+      .then((rows) => {
+        setMcps(rows);
+        setLoadError(null);
+      })
+      .catch((e) => {
+        const msg = e instanceof ApiError ? e.message : (e as Error).message;
+        setMcps([]);
+        setLoadError(msg);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -46,7 +54,7 @@ export function McpToolsPicker({ value, onChange, onToolTotals, disabled }: McpT
     [mcps],
   );
 
-  async function loadToolsForServer(serverId: string) {
+  async function loadToolsForServer(serverId: string, selectAllOnLoad = false) {
     setServerTools((prev) => {
       const next = new Map(prev);
       next.set(serverId, { status: "loading", tools: [] });
@@ -66,15 +74,13 @@ export function McpToolsPicker({ value, onChange, onToolTotals, disabled }: McpT
         }
         return next;
       });
-      // Default: enable all tools if this server hasn't been touched yet.
-      // Use functional updater to avoid stale-closure race when multiple
-      // servers are expanded concurrently.
-      onChange((prev) => {
-        if (prev.has(serverId)) return prev;
-        const next = new Map(prev);
-        next.set(serverId, new Set(tools.map((t) => t.name)));
-        return next;
-      });
+      if (selectAllOnLoad) {
+        onChange((prev) => {
+          const next = new Map(prev);
+          next.set(serverId, new Set(tools.map((t) => t.name)));
+          return next;
+        });
+      }
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : (e as Error).message;
       setServerTools((prev) => {
@@ -101,6 +107,31 @@ export function McpToolsPicker({ value, onChange, onToolTotals, disabled }: McpT
     });
   }
 
+  function toggleServer(serverId: string) {
+    const enabledSet = value.get(serverId);
+    if (enabledSet && enabledSet.size > 0) {
+      onChange((prev) => {
+        const next = new Map(prev);
+        next.delete(serverId);
+        return next;
+      });
+      return;
+    }
+
+    const state = serverTools.get(serverId);
+    if (state?.status === "ready") {
+      onChange((prev) => {
+        const next = new Map(prev);
+        next.set(serverId, new Set(state.tools.map((t) => t.name)));
+        return next;
+      });
+      return;
+    }
+
+    setExpandedServers((prev) => new Set(prev).add(serverId));
+    void loadToolsForServer(serverId, true);
+  }
+
   function toggleTool(serverId: string, toolName: string) {
     const next = new Map(value);
     const current = new Set(next.get(serverId) ?? []);
@@ -119,14 +150,22 @@ export function McpToolsPicker({ value, onChange, onToolTotals, disabled }: McpT
   }
 
   if (loading) {
-    return <p className="text-xs text-muted-foreground">Loading MCP servers from backend…</p>;
+    return <p className="text-xs text-muted-foreground">Loading MCP servers from LiteLLM gateway...</p>;
+  }
+
+  if (loadError) {
+    return (
+      <div className="space-y-1 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+        <p className="text-xs font-medium text-destructive">Could not load MCP servers.</p>
+        <p className="font-mono text-[11px] text-destructive/90">{loadError}</p>
+      </div>
+    );
   }
 
   if (sorted.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        No MCP servers configured. Configure them under{" "}
-        <span className="font-mono">/v1/mcp/server</span>.
+        No MCP servers are available from the LiteLLM gateway.
       </p>
     );
   }
@@ -143,26 +182,54 @@ export function McpToolsPicker({ value, onChange, onToolTotals, disabled }: McpT
 
           return (
             <li key={m.server_id}>
-              <button
-                type="button"
-                aria-expanded={expanded}
-                onClick={() => toggleExpanded(m.server_id)}
-                disabled={disabled}
+              <div
                 className={cn(
-                  "flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  "flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-accent/50",
                   enabledCount > 0 && "bg-accent/30",
                 )}
               >
-                <span className="grid size-4 shrink-0 place-items-center text-muted-foreground" aria-hidden>
-                  {expanded
-                    ? <ChevronDown className="size-3.5" />
-                    : <ChevronRight className="size-3.5" />}
-                </span>
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-[13px] text-foreground">{mcpLabel(m)}</span>
-                  {m.url ? (
-                    <span className="truncate font-mono text-[11px] text-muted-foreground">{m.url}</span>
-                  ) : null}
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => toggleExpanded(m.server_id)}
+                  disabled={disabled}
+                  className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                </button>
+                <label
+                  className={cn(
+                    "flex min-w-0 flex-1 cursor-pointer items-center gap-3",
+                    disabled && "cursor-not-allowed opacity-60",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "grid size-4 shrink-0 place-items-center rounded-[4px] border transition-colors",
+                      enabledCount > 0
+                        ? "border-foreground bg-foreground text-background"
+                        : "border-border bg-transparent",
+                    )}
+                    aria-hidden
+                  >
+                    {enabledCount > 0 ? <Check className="size-3" /> : null}
+                  </span>
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={enabledCount > 0}
+                    disabled={disabled}
+                    onChange={() => toggleServer(m.server_id)}
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-[13px] text-foreground">{mcpLabel(m)}</span>
+                    {m.url ? (
+                      <span className="truncate font-mono text-[11px] text-muted-foreground">{m.url}</span>
+                    ) : null}
+                  </span>
+                </label>
+                <span className="sr-only">
+                  {enabledCount > 0 ? "Attached to agent" : "Not attached to agent"}
                 </span>
                 {enabledCount > 0 ? (
                   <span className="shrink-0 rounded-md bg-foreground/90 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-background">
@@ -174,7 +241,7 @@ export function McpToolsPicker({ value, onChange, onToolTotals, disabled }: McpT
                     {m.transport}
                   </span>
                 ) : null}
-              </button>
+              </div>
 
               {expanded ? (
                 <div className="border-t bg-muted/20 px-3 py-2">

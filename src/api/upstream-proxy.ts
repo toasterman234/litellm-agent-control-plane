@@ -42,10 +42,16 @@ export async function forwardToLiteLLM(
       return Response.json({ object: "list", data: [] });
     }
     if (prefix === "v1" && joinedPath === "mcp/server" && req.method === "GET") {
-      return Response.json([]);
+      return Response.json(
+        { error: "LITELLM_API_BASE is required to list MCP servers" },
+        { status: 503 },
+      );
     }
     if (prefix === "mcp-rest" && joinedPath === "tools/list" && req.method === "GET") {
-      return Response.json({ tools: [] });
+      return Response.json(
+        { error: "LITELLM_API_BASE is required to list MCP tools" },
+        { status: 503 },
+      );
     }
     return Response.json(
       { error: "LITELLM_API_BASE is not configured" },
