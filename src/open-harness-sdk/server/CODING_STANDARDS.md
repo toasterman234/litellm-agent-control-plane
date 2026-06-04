@@ -31,6 +31,11 @@ boring, and cheap to start.
   per-process init.
 - **Stream frames as they arrive.** A turn is an async generator; never buffer a
   whole turn into an array before writing.
+- **Use `assistant` frames for incremental text, not `stream_event`.** The
+  managed-agents bridge (`translateFrame`) forwards `assistant` frames
+  immediately as `agent.message` events but drops `stream_event` frames entirely.
+  Emit incremental text as `assistant` frames with delta content so TTFF is not
+  gated on turn completion.
 - Do not parse model output on the hot path beyond the transformation itself.
 - One provider runtime per process; hold only this session's state in memory.
 

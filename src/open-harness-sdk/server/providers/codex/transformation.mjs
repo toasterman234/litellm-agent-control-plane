@@ -6,9 +6,9 @@
 //
 // Handled events:
 //   item.started / item.updated  { item: { type:"agent_message", id, text } }
-//     → stream_event content_block_delta frame for each new character slice
+//     → assistant frame with the delta text
 //   item.completed               { item: { type:"agent_message", id, text } }
-//     → assistant frame with the complete text content block
+//     → assistant frame with any remaining text (handles SDKs that skip updates)
 //
 // All other events are ignored (forward-compatible).
 export function createEventTransformer() {
@@ -26,19 +26,16 @@ export function createEventTransformer() {
         const delta = item.text.slice(prev);
         if (!delta) return [];
         textPositions.set(item.id, item.text.length);
-        return [
-          {
-            type: "stream_event",
-            session_id: sessionId,
-            event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: delta } },
-          },
-        ];
+        return [{ type: "assistant", message: { model, content: [{ type: "text", text: delta }] }, parent_tool_use_id: null }];
       }
 
       case "item.completed": {
         const item = event.item;
         if (item?.type !== "agent_message" || typeof item.text !== "string") return [];
-        return [{ type: "assistant", message: { model, content: [{ type: "text", text: item.text }] }, parent_tool_use_id: null }];
+        const prev = textPositions.get(item.id) ?? 0;
+        const remaining = item.text.slice(prev);
+        if (!remaining) return [];
+        return [{ type: "assistant", message: { model, content: [{ type: "text", text: remaining }] }, parent_tool_use_id: null }];
       }
 
       default:
