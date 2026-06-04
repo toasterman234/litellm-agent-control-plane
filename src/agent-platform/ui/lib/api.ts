@@ -1,13 +1,17 @@
 /**
- * Shared API helpers for talking to the local Next.js backend's
- * managed_agents endpoints.
+ * Shared API helpers for talking to the local Next.js backend and the
+ * lite-harness managed-agents server.
  *
  * Every request goes to /api/v1/... on the same Next.js origin that serves
  * this UI. The backend route handlers (src/app/api/v1/...) own all egress to
  * AWS / LiteLLM / harness containers; the browser never touches those
  * services directly.
  *
- * Endpoints used (all under /v1/managed_agents):
+ * Agent/admin endpoints still use the local Next.js backend. Runtime session
+ * inference for UI-created sessions goes directly to the managed-agents
+ * harness server configured by NEXT_PUBLIC_LITE_HARNESS_SERVER_URL.
+ *
+ * Backend endpoints used (all under /v1/managed_agents):
  *   GET    /dockerfiles                              — list configured harnesses
  *   GET    /agents                                   — list agents
  *   GET    /agents/{id}                              — one agent
@@ -32,6 +36,69 @@ export type { VaultInterception, VaultInterceptionFingerprint };
  * key into the bundle.
  */
 const PROXY_PREFIX = "/api";
+const DEFAULT_HARNESS_SERVER_URL = "http://localhost:4096";
+const HARNESS_SESSION_PREFIX = "session_";
+const HARNESS_SESSION_META_STORAGE = "lap_harness_session_meta";
+
+function harnessServerUrl(): string {
+  const raw =
+    process.env.NEXT_PUBLIC_LITE_HARNESS_SERVER_URL ||
+    process.env.NEXT_PUBLIC_HARNESS_SERVER_URL ||
+    DEFAULT_HARNESS_SERVER_URL;
+  return raw.replace(/\/+$/, "");
+}
+
+function isHarnessSessionId(id: string): boolean {
+  return id.startsWith(HARNESS_SESSION_PREFIX);
+}
+
+interface HarnessSessionMeta {
+  agent_id: string;
+  harness_id: string;
+  model?: string | null;
+  agent_name?: string | null;
+  created_at?: string | null;
+}
+
+function readHarnessSessionMeta(): Record<string, HarnessSessionMeta> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(HARNESS_SESSION_META_STORAGE);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, HarnessSessionMeta>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getHarnessSessionMeta(id: string): HarnessSessionMeta | null {
+  return readHarnessSessionMeta()[id] ?? null;
+}
+
+function saveHarnessSessionMeta(id: string, meta: HarnessSessionMeta): void {
+  if (typeof window === "undefined") return;
+  try {
+    const all = readHarnessSessionMeta();
+    all[id] = meta;
+    window.localStorage.setItem(HARNESS_SESSION_META_STORAGE, JSON.stringify(all));
+  } catch {
+    /* localStorage is best-effort */
+  }
+}
+
+function deleteHarnessSessionMeta(id: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const all = readHarnessSessionMeta();
+    delete all[id];
+    window.localStorage.setItem(HARNESS_SESSION_META_STORAGE, JSON.stringify(all));
+  } catch {
+    /* localStorage is best-effort */
+  }
+}
 
 /**
  * Auth header value, or null if no key is stored yet.
@@ -319,6 +386,41 @@ export interface HarnessMessageResponse {
   [key: string]: unknown;
 }
 
+export interface ManagedAgentContentBlock {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+export interface ManagedAgentEvent {
+  id?: string;
+  session_id?: string;
+  created_at?: string;
+  type: string;
+  content?: ManagedAgentContentBlock[];
+  name?: string;
+  input?: unknown;
+  tool_use_id?: string;
+  is_error?: boolean;
+  error?: string;
+  usage?: unknown;
+  total_cost_usd?: number;
+  [key: string]: unknown;
+}
+
+interface ManagedAgentSessionWire {
+  id: string;
+  object?: string;
+  agent?: string;
+  status?: string;
+  created_at?: string;
+}
+
+interface ManagedAgentListWire<T> {
+  object?: string;
+  data?: T[];
+}
+
 export interface HarnessMessageInfo {
   id: string;
   sessionID: string;
@@ -494,6 +596,106 @@ export async function api<T>(
   }
 
   return parsed as T;
+}
+
+async function harnessApi<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  init?: ApiInit,
+): Promise<T> {
+  const headers: Record<string, string> = { ...(init?.headers ?? {}) };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(`${harnessServerUrl()}${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: init?.signal,
+  });
+
+  const text = await res.text();
+  let parsed: unknown = null;
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+
+  if (!res.ok) {
+    const detail =
+      parsed && typeof parsed === "object" && parsed !== null && "error" in parsed
+        ? (parsed as { error: unknown }).error
+        : parsed;
+    throw new ApiError(res.status, detail, extractErrorMessage(detail, res.status));
+  }
+
+  return parsed as T;
+}
+
+function managedStatusToSessionStatus(status?: string): SessionStatus {
+  if (status === "idle" || status === "running") return "ready";
+  if (status === "error") return "failed";
+  return "ready";
+}
+
+function mapManagedSession(
+  wire: ManagedAgentSessionWire,
+  meta: HarnessSessionMeta | null,
+): SessionRow {
+  return {
+    id: wire.id,
+    agent_id: meta?.agent_id ?? wire.agent ?? "harness",
+    harness_session_id: wire.id,
+    status: managedStatusToSessionStatus(wire.status),
+    task_arn: null,
+    sandbox_url: harnessServerUrl(),
+    tty_url: null,
+    tty_token: null,
+    response: null,
+    created_at: wire.created_at ?? meta?.created_at ?? null,
+    last_seen_at: null,
+    idle_timeout_ms: null,
+    failure_reason: wire.status === "error" ? "harness session failed" : null,
+    phase: wire.status ?? null,
+    phase_detail: null,
+    origin: null,
+    title_preview: meta?.agent_name ?? null,
+    warnings: null,
+  };
+}
+
+function messageText(req: SendMessageRequest): string {
+  if (typeof req.text === "string") return req.text;
+  const parts = req.parts ?? [];
+  return parts
+    .filter((p) => p?.type === "text" && typeof p.text === "string")
+    .map((p) => p.text as string)
+    .join("");
+}
+
+function messageContentBlocks(req: SendMessageRequest): ManagedAgentContentBlock[] {
+  const blocks: ManagedAgentContentBlock[] = [];
+  const text = messageText(req);
+  if (text) blocks.push({ type: "text", text });
+  for (const attachment of req.attachments ?? []) {
+    blocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: attachment.mime_type,
+        data: attachment.base64,
+      },
+    });
+  }
+  return blocks;
+}
+
+export function getHarnessBaseUrl(): string {
+  return harnessServerUrl();
 }
 
 // ---------- Templates / dockerfiles ----------
@@ -869,6 +1071,12 @@ export function listSessions(agentId?: string): Promise<SessionRow[]> {
 }
 
 export function getSession(id: string): Promise<SessionRow> {
+  if (isHarnessSessionId(id)) {
+    return harnessApi<ManagedAgentSessionWire>(
+      "GET",
+      `/v1/sessions/${encodeURIComponent(id)}`,
+    ).then((s) => mapManagedSession(s, getHarnessSessionMeta(id)));
+  }
   return api<SessionRow>(
     "GET",
     `/v1/managed_agents/sessions/${encodeURIComponent(id)}`,
@@ -910,15 +1118,42 @@ export function spawnSession(
   req: CreateSessionRequest,
   init?: ApiInit,
 ): Promise<SessionRow> {
-  return api<SessionRow>(
-    "POST",
-    `/v1/managed_agents/agents/${encodeURIComponent(agentId)}/session`,
-    req,
-    init,
-  );
+  return getAgent(agentId).then(async (agent) => {
+    const wire = await harnessApi<ManagedAgentSessionWire>(
+      "POST",
+      "/v1/sessions",
+      { agent: agent.harness_id, model: agent.model },
+      init,
+    );
+    const meta: HarnessSessionMeta = {
+      agent_id: agent.id,
+      harness_id: agent.harness_id,
+      model: agent.model,
+      agent_name: agent.name ?? null,
+      created_at: wire.created_at ?? new Date().toISOString(),
+    };
+    saveHarnessSessionMeta(wire.id, meta);
+    if (req.initial_prompt?.trim()) {
+      await sendMessage(
+        wire.id,
+        { text: req.initial_prompt.trim() },
+        init,
+      );
+    }
+    return mapManagedSession(wire, meta);
+  });
 }
 
 export function deleteSession(id: string): Promise<{ id: string; status: string }> {
+  if (isHarnessSessionId(id)) {
+    return harnessApi<{ id: string; deleted?: boolean }>(
+      "DELETE",
+      `/v1/sessions/${encodeURIComponent(id)}`,
+    ).then((r) => {
+      deleteHarnessSessionMeta(id);
+      return { id: r.id, status: r.deleted ? "deleted" : "unknown" };
+    });
+  }
   return api<{ id: string; status: string }>(
     "DELETE",
     `/v1/managed_agents/sessions/${encodeURIComponent(id)}`,
@@ -936,6 +1171,9 @@ export function restartSession(
   id: string,
   init?: ApiInit,
 ): Promise<SessionRow> {
+  if (isHarnessSessionId(id)) {
+    return getSession(id);
+  }
   return api<SessionRow>(
     "POST",
     `/v1/managed_agents/sessions/${encodeURIComponent(id)}/restart`,
@@ -948,6 +1186,9 @@ export function abortSession(
   id: string,
   init?: ApiInit,
 ): Promise<{ ok: boolean }> {
+  if (isHarnessSessionId(id)) {
+    return Promise.resolve({ ok: false });
+  }
   return api<{ ok: boolean }>(
     "POST",
     `/v1/managed_agents/sessions/${encodeURIComponent(id)}/abort`,
@@ -1213,6 +1454,15 @@ export async function getSessionThread(
   sessionId: string,
   opts: { signal?: AbortSignal } = {},
 ): Promise<unknown[]> {
+  if (isHarnessSessionId(sessionId)) {
+    const body = await harnessApi<ManagedAgentListWire<ManagedAgentEvent>>(
+      "GET",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/events`,
+      undefined,
+      { signal: opts.signal },
+    );
+    return Array.isArray(body.data) ? body.data : [];
+  }
   const path = `/v1/managed_agents/sessions/${encodeURIComponent(sessionId)}/messages`;
   const auth = authHeader();
   const headers: Record<string, string> = {};
@@ -1268,12 +1518,43 @@ export function sendMessage(
   req: SendMessageRequest,
   init?: ApiInit,
 ): Promise<HarnessMessageResponse> {
+  if (isHarnessSessionId(sessionId)) {
+    return harnessApi<{ ok: boolean }>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/events`,
+      {
+        events: [
+          {
+            type: "user.message",
+            content: messageContentBlocks(req),
+          },
+        ],
+      },
+      init,
+    ).then(() => ({ parts: [] }));
+  }
   return api<HarnessMessageResponse>(
     "POST",
     `/v1/managed_agents/sessions/${encodeURIComponent(sessionId)}/message`,
     req,
     init,
   );
+}
+
+export function subscribeManagedAgentEvents(
+  sessionId: string,
+  onEvent: (event: ManagedAgentEvent) => void,
+): EventSource {
+  const url = `${harnessServerUrl()}/v1/sessions/${encodeURIComponent(sessionId)}/events/stream`;
+  const es = new EventSource(url);
+  es.onmessage = (ev: MessageEvent) => {
+    try {
+      onEvent(JSON.parse(ev.data) as ManagedAgentEvent);
+    } catch {
+      /* ignore malformed frames */
+    }
+  };
+  return es;
 }
 
 /**
@@ -1301,6 +1582,10 @@ export async function sendMessageStream(
   onFrame: (frame: MessageStreamFrame) => void,
   init?: ApiInit,
 ): Promise<void> {
+  if (isHarnessSessionId(sessionId)) {
+    await sendMessage(sessionId, req, init);
+    return;
+  }
   const auth = authHeader();
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -1381,6 +1666,9 @@ export function listSessionMessages(
   sessionId: string,
   init?: ApiInit,
 ): Promise<HarnessMessage[]> {
+  if (isHarnessSessionId(sessionId)) {
+    return Promise.resolve([]);
+  }
   return api<HarnessMessage[]>(
     "GET",
     `/v1/managed_agents/sessions/${encodeURIComponent(sessionId)}/messages`,

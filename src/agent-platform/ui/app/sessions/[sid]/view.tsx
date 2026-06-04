@@ -53,6 +53,7 @@ import {
   deleteSession,
   checkSessionAssessment,
   getAgent,
+  getHarnessBaseUrl,
   getDiagnose,
   getSandboxLogs,
   getSession,
@@ -84,6 +85,7 @@ import {
   type SendParts,
   type PermissionResponse,
 } from "./opencode-stream";
+import { useManagedAgentThread } from "./managed-agent-stream";
 import { TerminalPanel } from "./terminal-panel";
 import { SessionSidebar, extractLatestTasks } from "./session-sidebar";
 import { toast } from "sonner";
@@ -91,6 +93,7 @@ import { toast } from "sonner";
 // Harnesses whose pod exposes a PTY (xterm.js attaches to it directly)
 // rather than the JSON message API. Add new TUI harness ids here.
 const TUI_HARNESS_IDS = new Set<string>(["claude-code", "codex"]);
+const HARNESS_SESSION_PREFIX = "session_";
 
 type LocalRole = "user" | "assistant";
 
@@ -326,11 +329,17 @@ export default function SessionThreadView() {
   // Slack/Linear on this session — all come back over the same stream. No
   // drain, no optimistic state, no refetch reconciliation.
   const ready = !!sessionId && session?.status === "ready";
-  const thread = useOpencodeThread(
+  const isHarnessRuntimeSession = sessionId.startsWith(HARNESS_SESSION_PREFIX);
+  const opencodeThread = useOpencodeThread(
     sessionId,
     session?.harness_session_id,
-    ready,
+    ready && !isHarnessRuntimeSession,
   );
+  const managedThread = useManagedAgentThread(
+    sessionId,
+    ready && isHarnessRuntimeSession,
+  );
+  const thread = isHarnessRuntimeSession ? managedThread : opencodeThread;
   // Assistant turns + ordering come from the event stream; user messages are
   // overridden with the locally-sent copy so the harness echo can't change
   // them. In-flight prompts (echo not yet arrived) append at the end.
@@ -663,6 +672,7 @@ export default function SessionThreadView() {
         assessmentLoading={assessmentLoading}
         assessmentError={assessmentError}
         checkAssessmentNow={checkAssessmentNow}
+        isHarnessRuntimeSession={isHarnessRuntimeSession}
       />
       <SessionSidebar tasks={sessionTasks} />
       <SessionLogPanel
@@ -749,6 +759,7 @@ interface MainPanelProps {
   assessmentLoading: boolean;
   assessmentError: string | null;
   checkAssessmentNow: () => void;
+  isHarnessRuntimeSession: boolean;
 }
 
 function MainPanel({
@@ -790,6 +801,7 @@ function MainPanel({
   assessmentLoading,
   assessmentError,
   checkAssessmentNow,
+  isHarnessRuntimeSession,
 }: MainPanelProps) {
   const sessionShortId = session?.id ? session.id.slice(0, 8) : "—";
   const statusLabel = session?.status ?? "unknown";
@@ -984,7 +996,7 @@ function MainPanel({
         />
       )}
 
-      {agent && TUI_HARNESS_IDS.has(agent.harness_id) ? (
+      {agent && TUI_HARNESS_IDS.has(agent.harness_id) && !isHarnessRuntimeSession ? (
         <TerminalPanel
           sessionId={session?.id ?? ""}
           harnessId={agent.harness_id}
@@ -1475,6 +1487,64 @@ function buildCodeSnippets(
   harnessSessionId: string,
 ): Record<"message" | "stream", Record<CodeLang, string>> {
   const sid = sessionId || "SESSION_ID";
+  if (sid.startsWith(HARNESS_SESSION_PREFIX)) {
+    const base = getHarnessBaseUrl();
+    const sessionUrl = `${base}/v1/sessions/${sid}`;
+    return {
+      message: {
+        curl: `curl -X POST ${sessionUrl}/events \\
+  -H "Content-Type: application/json" \\
+  -d '{"events":[{"type":"user.message","content":[{"type":"text","text":"your message"}]}]}'`,
+        python: `import requests
+
+resp = requests.post(
+    "${sessionUrl}/events",
+    json={
+        "events": [{
+            "type": "user.message",
+            "content": [{"type": "text", "text": "your message"}],
+        }],
+    },
+)
+print(resp.json())`,
+        js: `await fetch("${sessionUrl}/events", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    events: [{
+      type: "user.message",
+      content: [{ type: "text", text: "your message" }],
+    }],
+  }),
+});`,
+      },
+      stream: {
+        curl: `curl -N ${sessionUrl}/events/stream
+
+# Frames are managed-agent events:
+# data: {"type":"agent.message","content":[{"type":"text","text":"Hi"}]}
+# data: {"type":"session.status_idle","usage":{...}}`,
+        python: `import httpx, json
+
+with httpx.stream("GET", "${sessionUrl}/events/stream") as r:
+    for line in r.iter_lines():
+        if not line.startswith("data: "): continue
+        ev = json.loads(line[6:])
+        if ev["type"] == "agent.message":
+            print("".join(b.get("text", "") for b in ev.get("content", [])))
+        elif ev["type"] == "session.status_idle":
+            break`,
+        js: `const events = new EventSource("${sessionUrl}/events/stream");
+events.onmessage = (msg) => {
+  const ev = JSON.parse(msg.data);
+  if (ev.type === "agent.message") {
+    console.log(ev.content?.map((b) => b.text ?? "").join(""));
+  }
+  if (ev.type === "session.status_idle") events.close();
+};`,
+      },
+    };
+  }
   const hsid = harnessSessionId || "OPENCODE_SESSION_ID";
   const oc = `https://your-host/api/v1/managed_agents/sessions/${sid}/opencode`;
   return {
@@ -1562,6 +1632,7 @@ function SessionDrawer({ open, onClose, session, agent }: SessionDrawerProps) {
     () => buildCodeSnippets(sessionId, session?.harness_session_id ?? ""),
     [sessionId, session?.harness_session_id],
   );
+  const isHarnessRuntimeSession = sessionId.startsWith(HARNESS_SESSION_PREFIX);
 
   const handleCopy = useCallback(
     async (which: "message" | "stream") => {
@@ -1631,7 +1702,9 @@ function SessionDrawer({ open, onClose, session, agent }: SessionDrawerProps) {
                   Send message
                 </div>
                 <div className="font-mono text-[10px] text-muted-foreground mt-0.5">
-                  POST /sessions/{"{id}"}/opencode/session/{"{ocid}"}/message
+                  {isHarnessRuntimeSession
+                    ? "POST /v1/sessions/{id}/events"
+                    : <>POST /sessions/{"{id}"}/opencode/session/{"{ocid}"}/message</>}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -1665,7 +1738,9 @@ function SessionDrawer({ open, onClose, session, agent }: SessionDrawerProps) {
                   Stream message
                 </div>
                 <div className="font-mono text-[10px] text-muted-foreground mt-0.5">
-                  GET /sessions/{"{id}"}/opencode/event
+                  {isHarnessRuntimeSession
+                    ? "GET /v1/sessions/{id}/events/stream"
+                    : <>GET /sessions/{"{id}"}/opencode/event</>}
                 </div>
               </div>
               <div className="flex items-center gap-2">
