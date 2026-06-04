@@ -126,17 +126,17 @@ function toTemplate(template: AgentTemplate): TemplateSpec {
     harness: template.harness_id,
     model: template.model,
     system: template.prompt,
-    pfp_url: null,
-    mcp_servers: [],
-    mcp_allowed_tools: [],
+    pfp_url: template.pfp_url ?? null,
+    mcp_servers: template.mcp_servers ?? [],
+    mcp_allowed_tools: template.mcp_allowed_tools ?? [],
     env_vars: template.env_vars,
-    env_var_hosts: {},
+    env_var_hosts: template.env_var_hosts ?? {},
     tools:
       template.tools.length > 0
         ? template.tools.map((tool) => ({ type: tool }))
         : [{ type: "agent_toolset_20260401" }],
     skills: template.skill_name ? [template.skill_name] : [],
-    skill_ids: [],
+    skill_ids: template.skill_ids ?? [],
     skill_name: template.skill_name,
     skill_description: "",
     skill: template.skill,

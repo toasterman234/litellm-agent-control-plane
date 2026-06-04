@@ -29,6 +29,25 @@ import { cn } from "@/ui/lib/utils";
 
 const DEFAULT_MODEL = "anthropic/claude-haiku-4-5";
 const NAME_MAX = 64;
+const INTERNAL_TEMPLATES_STORAGE = "lap_internal_agent_templates";
+
+interface InternalTemplateSpec {
+  id: string;
+  name: string;
+  description: string;
+  harness: string;
+  model: string;
+  system: string;
+  pfp_url?: string | null;
+  mcp_servers?: string[];
+  mcp_allowed_tools?: McpAllowedTools[];
+  env_vars?: Record<string, string>;
+  env_var_hosts?: Record<string, string[]>;
+  tools?: Array<{ type: string }>;
+  skill_ids?: string[];
+  skill_name?: string;
+  skill?: string;
+}
 
 function normalizeRepoUrl(repo: string | undefined): string | undefined {
   const trimmed = repo?.trim();
@@ -52,6 +71,53 @@ function enabledToolsFromTemplate(t: AgentTemplate): EnabledTools {
   return enabled;
 }
 
+function toInternalAgentTemplate(template: InternalTemplateSpec): AgentTemplate {
+  return {
+    id: template.id,
+    name: template.name,
+    description: template.description,
+    icon: "🤖",
+    tags: ["internal"],
+    harness_id: template.harness,
+    model: template.model,
+    prompt: template.system,
+    skill_name: template.skill_name ?? "",
+    skill: template.skill ?? "",
+    tools: (template.tools ?? []).map((tool) => tool.type).filter(Boolean),
+    mcp_servers: template.mcp_servers ?? [],
+    mcp_allowed_tools: template.mcp_allowed_tools ?? [],
+    requirements: null,
+    env_vars: template.env_vars ?? {},
+    env_var_hosts: template.env_var_hosts ?? {},
+    skill_ids: template.skill_ids ?? [],
+    pfp_url: template.pfp_url ?? null,
+    files: [],
+  };
+}
+
+function loadInternalTemplates(): AgentTemplate[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(INTERNAL_TEMPLATES_STORAGE);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((template): template is InternalTemplateSpec =>
+        template &&
+        typeof template === "object" &&
+        typeof template.id === "string" &&
+        typeof template.name === "string" &&
+        typeof template.harness === "string" &&
+        typeof template.model === "string" &&
+        typeof template.system === "string",
+      )
+      .map(toInternalAgentTemplate);
+  } catch {
+    return [];
+  }
+}
+
 export default function NewAgentPage() {
   const router = useRouter();
 
@@ -70,7 +136,10 @@ export default function NewAgentPage() {
     : "";
 
   useEffect(() => {
-    listTemplates().then(setTemplates).catch(() => {});
+    const internal = loadInternalTemplates();
+    listTemplates()
+      .then((globalTemplates) => setTemplates([...internal, ...globalTemplates]))
+      .catch(() => setTemplates(internal));
   }, []);
 
   function selectTemplate(id: string) {
