@@ -129,10 +129,7 @@ async fn create_provider_agent(
         .agents()
         .create(CreateAgentParams {
             lap_agent_runtime: runtime,
-            // Pass the LAP agent config through so runtimes that bind to an
-            // existing provider agent (e.g. Elastic Agent Builder) can read
-            // their provider-specific fields without bespoke plumbing.
-            lap_provider_options: Some(created.agent.config.clone()),
+            lap_provider_options: provider_options(runtime, created),
             name: gemini::provider_agent_name(runtime, created),
             model: AgentModel::Config(AgentModelConfig {
                 id: agent_model(&created.agent, &created.environment),
@@ -148,6 +145,10 @@ async fn create_provider_agent(
         })
         .await
         .map_err(agent_sdk_error)
+}
+
+fn provider_options(runtime: AgentRuntime, created: &CreatedRuntimeSession) -> Option<Value> {
+    (runtime == AgentRuntime::ElasticAgentBuilder).then(|| created.agent.config.clone())
 }
 
 async fn create_provider_environment(

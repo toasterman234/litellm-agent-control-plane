@@ -1,13 +1,11 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use reqwest::{header, Method};
 use serde::Serialize;
 use serde_json::Value;
 
 use super::{
+    client_state::ClientState,
     events::{stream_events, AgentEventStream},
     resources::Beta,
     responses::{ensure_success, response_json},
@@ -25,14 +23,7 @@ pub struct Lap {
 struct Inner {
     http: reqwest::Client,
     runtimes: HashMap<AgentRuntime, RuntimeConfig>,
-    session_contexts: Mutex<HashMap<String, SessionContext>>,
-    cursor_run_ids: Mutex<HashMap<String, String>>,
-    /// Generic per-session prompt stash for runtimes whose provider call is
-    /// deferred to the streaming phase (e.g. Elastic Agent Builder).
-    pending_turns: Mutex<HashMap<String, String>>,
-    /// Generic per-agent provider metadata stash, captured at agent-bind time
-    /// and consumed when the session is created within the same client.
-    agent_meta: Mutex<HashMap<String, Value>>,
+    state: Arc<ClientState>,
     elastic_default_agent_id: Option<String>,
 }
 
@@ -64,10 +55,7 @@ impl Lap {
             inner: Arc::new(Inner {
                 http,
                 runtimes,
-                session_contexts: Mutex::new(HashMap::new()),
-                cursor_run_ids: Mutex::new(HashMap::new()),
-                pending_turns: Mutex::new(HashMap::new()),
-                agent_meta: Mutex::new(HashMap::new()),
+                state: ClientState::new(),
                 elastic_default_agent_id,
             }),
         }
@@ -187,28 +175,17 @@ impl Lap {
         &self,
         session_id: &str,
     ) -> Result<AgentRuntime, AgentSdkError> {
-        let contexts = self
-            .inner
-            .session_contexts
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?;
-        contexts
-            .get(session_id)
-            .map(|context| context.runtime)
-            .map(Ok)
-            .unwrap_or_else(|| self.default_runtime())
+        match self.inner.state.runtime_for_session(session_id)? {
+            Some(runtime) => Ok(runtime),
+            None => self.default_runtime(),
+        }
     }
 
     pub(crate) fn context_for_session(
         &self,
         session_id: &str,
     ) -> Result<Option<SessionContext>, AgentSdkError> {
-        let contexts = self
-            .inner
-            .session_contexts
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?;
-        Ok(contexts.get(session_id).cloned())
+        self.inner.state.context_for_session(session_id)
     }
 
     pub(crate) fn remember_cursor_run(
@@ -216,25 +193,14 @@ impl Lap {
         agent_id: &str,
         run_id: &str,
     ) -> Result<(), AgentSdkError> {
-        self.inner
-            .cursor_run_ids
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?
-            .insert(agent_id.to_owned(), run_id.to_owned());
-        Ok(())
+        self.inner.state.remember_cursor_run(agent_id, run_id)
     }
 
     pub(crate) fn cursor_run_for_agent(
         &self,
         agent_id: &str,
     ) -> Result<Option<String>, AgentSdkError> {
-        Ok(self
-            .inner
-            .cursor_run_ids
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?
-            .get(agent_id)
-            .cloned())
+        self.inner.state.cursor_run_for_agent(agent_id)
     }
 
     pub(crate) fn elastic_default_agent_id(&self) -> Option<String> {
@@ -246,47 +212,29 @@ impl Lap {
         session_id: &str,
         prompt: &str,
     ) -> Result<(), AgentSdkError> {
-        self.inner
-            .pending_turns
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?
-            .insert(session_id.to_owned(), prompt.to_owned());
-        Ok(())
+        self.inner.state.remember_pending_turn(session_id, prompt)
     }
 
     pub(crate) fn take_pending_turn(
         &self,
         session_id: &str,
     ) -> Result<Option<String>, AgentSdkError> {
-        Ok(self
-            .inner
-            .pending_turns
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?
-            .remove(session_id))
+        self.inner.state.take_pending_turn(session_id)
     }
 
     pub(crate) fn remember_agent_meta(
         &self,
         agent_id: &str,
-        meta: Value,
+        meta: serde_json::Value,
     ) -> Result<(), AgentSdkError> {
-        self.inner
-            .agent_meta
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?
-            .insert(agent_id.to_owned(), meta);
-        Ok(())
+        self.inner.state.remember_agent_meta(agent_id, meta)
     }
 
-    pub(crate) fn agent_meta(&self, agent_id: &str) -> Result<Option<Value>, AgentSdkError> {
-        Ok(self
-            .inner
-            .agent_meta
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?
-            .get(agent_id)
-            .cloned())
+    pub(crate) fn agent_meta(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<serde_json::Value>, AgentSdkError> {
+        self.inner.state.agent_meta(agent_id)
     }
 
     pub(crate) fn remember_session_context(
@@ -295,11 +243,8 @@ impl Lap {
         context: SessionContext,
     ) -> Result<(), AgentSdkError> {
         self.inner
-            .session_contexts
-            .lock()
-            .map_err(|_| AgentSdkError::StateLock)?
-            .insert(session_id.to_owned(), context);
-        Ok(())
+            .state
+            .remember_session_context(session_id, context)
     }
 
     pub(crate) fn remember_session(

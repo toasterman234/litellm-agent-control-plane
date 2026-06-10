@@ -49,7 +49,10 @@ fn env_or_skip() -> Option<Env> {
 }
 
 fn lap(env: &Env) -> Lap {
-    Lap::new(LapConfig::elastic(env.api_key.clone(), env.kibana_url.clone()))
+    Lap::new(LapConfig::elastic(
+        env.api_key.clone(),
+        env.kibana_url.clone(),
+    ))
 }
 
 /// Provider options the HTTP layer would normally pull from the LAP agent config.
@@ -160,7 +163,10 @@ async fn run_turn(lap: &Lap, session_id: &str, prompt: &str) -> (String, Option<
                 assistant.push_str(text);
             }
         }
-        if matches!(event.event_type.as_str(), "session.status_idle" | "session.error") {
+        if matches!(
+            event.event_type.as_str(),
+            "session.status_idle" | "session.error"
+        ) {
             break;
         }
     }
@@ -171,9 +177,7 @@ async fn run_turn(lap: &Lap, session_id: &str, prompt: &str) -> (String, Option<
 #[ignore = "requires a live Elastic Agent Builder deployment; see file header"]
 async fn elastic_agent_builder_two_turn_conversation() {
     let Some(env) = env_or_skip() else {
-        eprintln!(
-            "skipping: set ELASTIC_KIBANA_URL, ELASTIC_API_KEY, ELASTIC_AGENT_ID to run"
-        );
+        eprintln!("skipping: set ELASTIC_KIBANA_URL, ELASTIC_API_KEY, ELASTIC_AGENT_ID to run");
         return;
     };
 
@@ -181,7 +185,10 @@ async fn elastic_agent_builder_two_turn_conversation() {
 
     // 1. bind + open a session
     let agent = bind_agent(&lap, &env).await;
-    assert_eq!(agent.id, env.agent_id, "binds to the existing Elastic agent");
+    assert_eq!(
+        agent.id, env.agent_id,
+        "binds to the existing Elastic agent"
+    );
     let session = open_session(&lap, &agent.id).await;
     println!("[live] session id={}", session.id);
 
@@ -218,7 +225,10 @@ async fn elastic_agent_builder_two_turn_conversation() {
     println!("[live] turn2 assistant: {text2}");
 
     if let Some(conv2) = conv2 {
-        assert_eq!(conv1, conv2, "second turn reuses the same Elastic conversation_id");
+        assert_eq!(
+            conv1, conv2,
+            "second turn reuses the same Elastic conversation_id"
+        );
     }
     assert!(!text1.is_empty(), "turn 1 produced assistant text");
 }

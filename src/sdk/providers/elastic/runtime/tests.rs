@@ -113,7 +113,12 @@ async fn collect(stream: AgentEventStream) -> Vec<AgentEvent> {
 
 #[tokio::test]
 async fn normalizes_elastic_events_and_captures_conversation_id() {
-    let raw = vec![
+    let events = collect(normalize_elastic_stream(source_stream(elastic_round()))).await;
+    assert_normalized_round(&events);
+}
+
+fn elastic_round() -> Vec<AgentEvent> {
+    vec![
         event(json!({ "type": "conversation_created", "conversation_id": "conv-42" })),
         event(json!({ "type": "reasoning", "reasoning": "thinking" })),
         event(json!({
@@ -130,11 +135,11 @@ async fn normalizes_elastic_events_and_captures_conversation_id() {
         event(json!({ "type": "message_chunk", "text_chunk": "Hello " })),
         event(json!({ "type": "message_chunk", "text_chunk": "world" })),
         event(json!({ "type": "round_complete" })),
-    ];
+    ]
+}
 
-    let events = collect(normalize_elastic_stream(source_stream(raw))).await;
+fn assert_normalized_round(events: &[AgentEvent]) {
     let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
-
     assert_eq!(
         types,
         vec![
@@ -146,29 +151,21 @@ async fn normalizes_elastic_events_and_captures_conversation_id() {
             "session.status_idle",
         ]
     );
-
-    // conversation_id surfaces as provider_run_id for persistence.
-    let idle = events
-        .iter()
-        .find(|e| e.event_type == "session.status_idle")
-        .unwrap();
-    assert_eq!(idle.data["provider_run_id"], json!("conv-42"));
-
-    let message = events
-        .iter()
-        .find(|e| e.event_type == "agent.message")
-        .unwrap();
+    assert_eq!(event_data(events, "session.status_idle")["provider_run_id"], json!("conv-42"));
     assert_eq!(
-        message.data["content"],
+        event_data(events, "agent.message")["content"],
         json!([{ "type": "text", "text": "Hello world" }])
     );
+    assert_eq!(event_data(events, "agent.tool_use")["id"], json!("call-1"));
+    assert_eq!(event_data(events, "agent.tool_use")["name"], json!("search"));
+}
 
-    let tool_use = events
+fn event_data<'a>(events: &'a [AgentEvent], event_type: &str) -> &'a serde_json::Map<String, Value> {
+    &events
         .iter()
-        .find(|e| e.event_type == "agent.tool_use")
-        .unwrap();
-    assert_eq!(tool_use.data["id"], json!("call-1"));
-    assert_eq!(tool_use.data["name"], json!("search"));
+        .find(|event| event.event_type == event_type)
+        .unwrap()
+        .data
 }
 
 #[tokio::test]
