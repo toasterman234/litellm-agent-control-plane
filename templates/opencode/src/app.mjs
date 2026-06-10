@@ -67,6 +67,44 @@ export function createApp({
       else try { res.end(); } catch {}
     });
 
+
+  function startCaptureLoop(sessionId, model) {
+    (async () => {
+      try {
+        const upstream = await ocFetch(await ocBase(), "/event", {});
+        if (!upstream.ok || !upstream.body) return;
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for await (const chunk of upstream.body) {
+          buffer += decoder.decode(chunk, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n")) !== -1) {
+            const block = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const data = block
+              .split("\n")
+              .filter((l) => l.startsWith("data:"))
+              .map((l) => l.slice(5).trim())
+              .join("");
+            if (!data) continue;
+            let ev;
+            try { ev = JSON.parse(data); } catch { continue; }
+            const out = translateOpencodeEvent(ev, { sessionId, model });
+            if (!out) continue;
+            const props = ev.properties || ev;
+            const eventId = props.id ?? null;
+            store.insertSessionEvent(sessionId, out, eventId);
+            if (out.event === "session.status_idle" || out.event === "session.error") return;
+          }
+        }
+      } catch (err) {
+        if (err?.name !== "AbortError") {
+          console.error(`[capture] ${sessionId}:`, err.message);
+        }
+      }
+    })();
+  }
+
   // ---- agents -------------------------------------------------------------
   // Write an agent's config to disk and reboot opencode so it loads (opencode
   // has no hot-reload). The mcp section is rebuilt from ALL agents so one
@@ -213,6 +251,14 @@ export function createApp({
         .json({ error: `opencode prompt failed (${r.status})`, detail: detail.slice(0, 500) });
     }
 
+    const userEventId = "usr_" + crypto.randomBytes(12).toString("hex");
+    store.insertSessionEvent(req.params.id, {
+      event: "user.message",
+      data: { content: parts },
+    }, userEventId);
+
+    startCaptureLoop(req.params.id, agent?.model || null);
+
     res.status(202).json({ ok: true });
   }));
 
@@ -226,9 +272,8 @@ export function createApp({
     res.status(r.ok ? 200 : r.status).json({ aborted: r.ok });
   }));
 
-  // Historical events (stub).
-  app.get("/v1/sessions/:id/events", wrap(async (_req, res) => {
-    res.json({ data: [] });
+  app.get("/v1/sessions/:id/events", wrap(async (req, res) => {
+    res.json({ data: store.listSessionEvents(req.params.id) });
   }));
 
   // Live SSE stream: opencode events -> Anthropic event shapes.
@@ -285,6 +330,9 @@ export function createApp({
 
           const out = translateOpencodeEvent(ev, { sessionId: req.params.id, model });
           if (out && out.event) {
+            const props2 = ev.properties || ev;
+            const eventId2 = props2.id ?? null;
+            store.insertSessionEvent(req.params.id, out, eventId2);
             res.write(`event: ${out.event}\ndata: ${JSON.stringify(out.data)}\n\n`);
           }
         }
