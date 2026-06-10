@@ -16,6 +16,7 @@ import {
 } from "./opencode.mjs";
 import { buildSandboxProvider } from "./sandbox.mjs";
 import { createApp } from "./app.mjs";
+import { fetchLiteLlmModels, modelListFromIds } from "./model-list.mjs";
 
 // ---- boot config ----------------------------------------------------------
 const PORT = process.env.PORT || 8080;
@@ -72,6 +73,17 @@ if (sandbox.error) {
   );
 }
 const DEFAULT_MODEL_PROVIDER_ID = LITELLM_BASE_URL && LITELLM_API_KEY ? LITELLM_PROVIDER_ID : null;
+
+async function listModels() {
+  if (LITELLM_BASE_URL && LITELLM_API_KEY) {
+    return fetchLiteLlmModels({
+      baseURL: LITELLM_BASE_URL,
+      apiKey: LITELLM_API_KEY,
+      ownedBy: LITELLM_PROVIDER_ID,
+    });
+  }
+  return modelListFromIds(LITELLM_MODELS, LITELLM_PROVIDER_ID);
+}
 
 const ocOpts = { port: OC_PORT, cwd: WORKDIR };
 
@@ -146,6 +158,7 @@ const app = createApp({
   workdir: WORKDIR,
   defaultModelProviderID: DEFAULT_MODEL_PROVIDER_ID,
   litellmProviderID: LITELLM_PROVIDER_ID,
+  listModels,
   ensureProviderModel,
   provisionAgent,
   writeMcpConfig,
