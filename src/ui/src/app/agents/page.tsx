@@ -2,10 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Bot, Clock, Plus, Play, Pencil, Trash2, X, Brain, Plug, Upload } from "lucide-react";
+import { Bot, Plus, X, Brain, Plug, Upload } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { BrandIcon } from "@/components/brand-icons";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -42,7 +41,7 @@ import {
   storeMemory,
   deleteMemory,
 } from "@/lib/api";
-import { DEFAULT_TIMEZONE, scheduleLabel } from "@/lib/schedule";
+import { DEFAULT_TIMEZONE } from "@/lib/schedule";
 import type {
   Agent,
   AgentRuntime,
@@ -53,13 +52,17 @@ import type {
   VaultKeyEntry,
   PlatformMcp,
 } from "@/lib/types";
-import {
-  slackActionClass,
-  slackActionLabel,
-  slackConfig,
-  useSlackAppFlow,
-} from "./slack-app-flow";
+import { useSlackAppFlow } from "./slack-app-flow";
 import { ImportAgentDialog } from "./import-agent-dialog";
+import { AgentsTable } from "./agents-table";
+import {
+  agentConfig,
+  importedSource,
+  platformMcpIds,
+  providerLabel,
+  runtimeFromAgent,
+  subAgentIds,
+} from "./agent-row-utils";
 
 interface FormState {
   name: string;
@@ -88,63 +91,6 @@ const EMPTY: FormState = {
   platform_mcp_ids: [],
   sub_agent_ids: [],
 };
-
-function agentConfig(agent: Agent): Record<string, unknown> {
-  return agent.config && typeof agent.config === "object" && !Array.isArray(agent.config)
-    ? (agent.config as Record<string, unknown>)
-    : {};
-}
-
-function platformMcpIds(agent: Agent): string[] {
-  const config = agentConfig(agent);
-  const value = config.platform_mcp_ids ?? config.platformMcpIds;
-  return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
-}
-
-function subAgentIds(agent: Agent): string[] {
-  const config = agentConfig(agent);
-  const value = config.sub_agents ?? config.subAgents;
-  if (!Array.isArray(value)) return [];
-  return [
-    ...new Set(
-      value
-        .map((entry) => {
-          if (!entry || typeof entry !== "object") return "";
-          const item = entry as Record<string, unknown>;
-          const id = item.agent_id ?? item.agentId ?? item.id;
-          return typeof id === "string" ? id.trim() : "";
-        })
-        .filter(Boolean),
-    ),
-  ];
-}
-
-interface ImportedAgentSource {
-  provider: string;
-  credential_mode?: "shared" | "byo";
-}
-
-function importedSource(agent: Agent): ImportedAgentSource | null {
-  const source = agentConfig(agent).source;
-  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
-  const value = source as Record<string, unknown>;
-  const provider = typeof value.provider === "string" ? value.provider.trim() : "";
-  if (!provider) return null;
-  const credentialMode = value.credential_mode;
-  return {
-    provider,
-    credential_mode:
-      credentialMode === "shared" || credentialMode === "byo" ? credentialMode : undefined,
-  };
-}
-
-function providerLabel(provider: string): string {
-  return provider
-    .split(/[_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
 
 export default function AgentsPage() {
   const router = useRouter();
@@ -250,12 +196,6 @@ export default function AgentsPage() {
       if (subAgentIds.length > 0) platformMcpIds.push("list_sub_agents", "run_sub_agent");
       return { ...f, sub_agent_ids: subAgentIds, platform_mcp_ids: platformMcpIds };
     });
-
-  const skillName = (id: string) => skills.find((s) => s.id === id)?.name ?? id;
-  const ruleName = (id: string) => rules.find((rule) => rule.id === id)?.name ?? id;
-  const platformMcpName = (id: string) =>
-    platformMcps.find((mcp) => mcp.id === id)?.name ?? id;
-  const runtimeName = (id: string) => runtimes.find((runtime) => runtime.id === id)?.name ?? id;
 
   const loadMemory = async (agentId: string) => {
     setMemories(null);
@@ -387,7 +327,7 @@ export default function AgentsPage() {
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          <div className="max-w-4xl mx-auto px-4 py-6 flex flex-col gap-3">
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 py-6">
             {error && (
               <Card className="border-destructive p-3">
                 <p className="text-sm text-destructive">{error}</p>
@@ -401,106 +341,20 @@ export default function AgentsPage() {
                 No agents yet. Start with a template or draft one from a prompt.
               </div>
             )}
-            {agents?.map((ag) => {
-              const slack = slackConfig(ag);
-              const attachedPlatformMcps = platformMcpIds(ag);
-              const source = importedSource(ag);
-              const accessLabel = source?.credential_mode === "byo"
-                ? byoConfiguredAgents.has(ag.id)
-                  ? "Key added"
-                  : "BYO key"
-                : source?.credential_mode === "shared"
-                  ? "Shared key"
-                  : null;
-              return (
-                <Card
-                  key={String(ag.id)}
-                  className="p-4 flex items-start justify-between gap-4 cursor-pointer hover:bg-muted/40 transition-colors"
-                  onClick={() => router.push(`/agents/detail/?id=${encodeURIComponent(ag.id)}`)}
-                >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm truncate">{String(ag.name)}</span>
-                    {Boolean(ag.model) && (
-                      <span className="font-mono text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">{String(ag.model)}</span>
-                    )}
-                    <span className="font-mono text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
-                      {source ? providerLabel(source.provider) : runtimeName(runtimeFromAgent(ag))}
-                    </span>
-                    {accessLabel && (
-                      <span className="font-mono text-[10px] bg-muted text-muted-foreground rounded px-1.5 py-0.5">
-                        {accessLabel}
-                      </span>
-                    )}
-                  </div>
-                  {Boolean(ag.description) && (
-                    <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{String(ag.description)}</p>
-                  )}
-                  {Boolean(ag.prompt) && (
-                    <p className="text-xs text-muted-foreground/70 mt-1 line-clamp-1 font-mono">{String(ag.prompt)}</p>
-                  )}
-                  <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1.5">
-                    <Clock className="size-3" />
-                    <span className="font-mono text-[11px]">{scheduleLabel(ag.cron, ag.timezone)}</span>
-                  </p>
-                  {Array.isArray(ag.skill_ids) && ag.skill_ids.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {ag.skill_ids.map((id) => (
-                        <Badge key={id} variant="secondary" className="text-[10px]">
-                          {skillName(id)}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                  {Array.isArray(ag.rule_ids) && ag.rule_ids.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {ag.rule_ids.map((id) => (
-                        <Badge key={id} variant="outline" className="text-[10px]">
-                          {ruleName(id)}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                  {attachedPlatformMcps.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {attachedPlatformMcps.map((id) => (
-                        <Badge key={id} variant="outline" className="text-[10px] gap-1">
-                          <Plug className="size-3" />
-                          {platformMcpName(id)}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button size="sm" variant="default" onClick={(e) => { e.stopPropagation(); openAgent(ag); }}>
-                    <Play className="size-3.5" />
-                    Run
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className={slackActionClass(slack)}
-                    onClick={(e) => { e.stopPropagation(); slackFlow.openSlack(ag); }}
-                    title={
-                      slack.status === "connected"
-                        ? `${slack.slack_team_name || "Slack"}${slack.bot_user_id ? ` · <@${slack.bot_user_id}>` : ""}`
-                        : slack.oauth_error || undefined
-                    }
-                  >
-                    <BrandIcon id="slack" className="size-3.5" />
-                    {slackActionLabel(slack)}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openEdit(ag); }} aria-label="Edit">
-                    <Pencil className="size-3.5" />
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); remove(ag); }} aria-label="Delete">
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
-              </Card>
-              );
-            })}
+            {agents && agents.length > 0 && (
+              <AgentsTable
+                agents={agents}
+                runtimes={runtimes}
+                byoConfiguredAgents={byoConfiguredAgents}
+                onRun={openAgent}
+                onEdit={openEdit}
+                onDelete={remove}
+                onSlack={slackFlow.openSlack}
+                onOpenDetail={(agent) =>
+                  router.push(`/agents/detail/?id=${encodeURIComponent(agent.id)}`)
+                }
+              />
+            )}
           </div>
         </main>
       </div>
@@ -534,7 +388,7 @@ export default function AgentsPage() {
               <Select
                 value={form.runtime}
                 onValueChange={(value) => {
-                  if (isAgentRuntimeId(value)) setForm({ ...form, runtime: value });
+                  if (value) setForm({ ...form, runtime: value });
                 }}
               >
                 <SelectTrigger className="h-8 w-full">
@@ -883,20 +737,6 @@ export default function AgentsPage() {
       {slackFlow.dialog}
     </div>
   );
-}
-
-function isAgentRuntimeId(value: unknown): value is AgentRuntimeId {
-  return value === "claude_managed_agents" || value === "cursor" || value === "gemini_antigravity";
-}
-
-function runtimeFromAgent(agent: Agent): AgentRuntimeId {
-  const config = agent.config;
-  if (config && typeof config === "object" && !Array.isArray(config)) {
-    const runtime = (config as { runtime?: unknown }).runtime;
-    if (isAgentRuntimeId(runtime)) return runtime;
-  }
-  if (isAgentRuntimeId(agent.harness)) return agent.harness;
-  return "claude_managed_agents";
 }
 
 function runtimeOptions(runtimes: AgentRuntime[]): AgentRuntime[] {
