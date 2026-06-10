@@ -100,6 +100,8 @@ export default function NewAgentPage() {
   const [runtimes, setRuntimes] = useState<AgentRuntime[]>([]);
   const [harnesses, setHarnesses] = useState<RuntimeHarness[]>([]);
   const [models, setModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
@@ -121,11 +123,10 @@ export default function NewAgentPage() {
   useEffect(() => {
     let cancelled = false;
 
-    Promise.all([listAgentRuntimes(), listModels(), listAgents(), listSkills(), listRules()])
-      .then(([runtimeValues, modelValues, agentValues, skillValues, ruleValues]) => {
+    Promise.all([listAgentRuntimes(), listAgents(), listSkills(), listRules()])
+      .then(([runtimeValues, agentValues, skillValues, ruleValues]) => {
         if (cancelled) return;
         setRuntimes(runtimeValues);
-        setModels(modelValues);
         setAgents(agentValues);
         setSkills(skillValues);
         setRules(ruleValues);
@@ -138,7 +139,6 @@ export default function NewAgentPage() {
       .catch(() => {
         if (cancelled) return;
         setRuntimes([]);
-        setModels([]);
         setAgents([]);
         setSkills([]);
         setRules([]);
@@ -187,6 +187,57 @@ export default function NewAgentPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const runtime = draft.runtime.trim();
+    if (!runtime) {
+      setModels([]);
+      setModelsLoading(false);
+      setModelsError(null);
+      return;
+    }
+
+    setModels([]);
+    setModelsLoading(true);
+    setModelsError(null);
+    listModels(runtime)
+      .then((modelValues) => {
+        if (cancelled) return;
+        setModels(modelValues);
+        setConfigText((current) => {
+          const currentDraft = parseAgentDraftConfig(current);
+          if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+          if (currentDraft.draft.runtime.trim() !== runtime) return current;
+          if (currentDraft.draft.model.trim()) return current;
+          return stringifyAgentDraft({ ...currentDraft.draft, model: modelValues[0] ?? "" });
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setModels([]);
+        setModelsError(apiErrorMessage(err, "Failed to load runtime models"));
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.runtime]);
+
+  useEffect(() => {
+    if (draft.model.trim() || models.length === 0) return;
+    const runtime = draft.runtime.trim();
+    setConfigText((current) => {
+      const currentDraft = parseAgentDraftConfig(current);
+      if (currentDraft.error && currentDraft.error !== "Model is required.") return current;
+      if (currentDraft.draft.runtime.trim() !== runtime) return current;
+      if (currentDraft.draft.model.trim()) return current;
+      return stringifyAgentDraft({ ...currentDraft.draft, model: models[0] });
+    });
+  }, [draft.model, draft.runtime, models]);
 
   useEffect(() => {
     listRuntimeHarnesses()
@@ -338,6 +389,8 @@ export default function NewAgentPage() {
               mcpIntegrations={mcpIntegrations}
               mcpLoading={mcpLoading}
               models={models}
+              modelsError={modelsError}
+              modelsLoading={modelsLoading}
               parsedError={parsed.error}
               prompt={prompt}
               rules={rules}
@@ -518,6 +571,8 @@ function ConfigStep({
   mcpIntegrations,
   mcpLoading,
   models,
+  modelsError,
+  modelsLoading,
   parsedError,
   prompt,
   rules,
@@ -547,6 +602,8 @@ function ConfigStep({
   mcpIntegrations: Integration[];
   mcpLoading: boolean;
   models: string[];
+  modelsError: string | null;
+  modelsLoading: boolean;
   parsedError: string | null;
   prompt: string;
   rules: Rule[];
@@ -704,6 +761,8 @@ function ConfigStep({
               mcpIntegrations={mcpIntegrations}
               mcpLoading={mcpLoading}
               models={models}
+              modelsError={modelsError}
+              modelsLoading={modelsLoading}
               rules={rules}
               skills={skills}
               runtimes={runtimes}
@@ -823,6 +882,8 @@ function AgentDraftControls({
   mcpIntegrations,
   mcpLoading,
   models,
+  modelsError,
+  modelsLoading,
   rules,
   skills,
   runtimes,
@@ -835,13 +896,15 @@ function AgentDraftControls({
   mcpIntegrations: Integration[];
   mcpLoading: boolean;
   models: string[];
+  modelsError: string | null;
+  modelsLoading: boolean;
   rules: Rule[];
   skills: Skill[];
   runtimes: AgentRuntime[];
   onChange: (next: AgentDraft) => void;
 }) {
   const update = (patch: Partial<AgentDraft>) => onChange({ ...draft, ...patch });
-  const availableModels = models.length > 0 ? models : [draft.model].filter(Boolean);
+  const availableModels = [...new Set([...models, draft.model].map((model) => model.trim()).filter(Boolean))];
   const runtime = runtimes.find((entry) => entry.id === draft.runtime);
   const selectedHarness = harnesses.find((entry) => entry.alias === draft.runtime);
   const toolOptions =
@@ -915,6 +978,12 @@ function AgentDraftControls({
               onValueChange={(model) => update({ model })}
             />
           </div>
+          {modelsLoading && (
+            <p className="text-xs text-[#9d9384]">Loading runtime models...</p>
+          )}
+          {modelsError && (
+            <p className="text-xs text-red-300">{modelsError}</p>
+          )}
         </div>
 
         {harnesses.length >= 1 && (
