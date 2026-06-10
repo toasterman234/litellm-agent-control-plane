@@ -59,11 +59,38 @@ const SPEC_LABELS: Record<string, string> = {
   opencode: "OpenCode",
 };
 
-const SPEC_OPTIONS = [
-  { value: "claude_managed_agents", label: "Claude Managed Agents" },
-  { value: "cursor", label: "Cursor" },
-  { value: "gemini_antigravity", label: "Gemini Antigravity" },
-  { value: "opencode", label: "OpenCode" },
+const RUNTIME_OPTIONS = [
+  {
+    value: "claude_managed_agents",
+    label: "Claude Managed Agents",
+    apiSpec: "claude_managed_agents",
+    defaultApiBase: SPEC_DEFAULTS.claude_managed_agents,
+  },
+  {
+    value: "cursor",
+    label: "Cursor",
+    apiSpec: "cursor",
+    defaultApiBase: SPEC_DEFAULTS.cursor,
+  },
+  {
+    value: "gemini_antigravity",
+    label: "Gemini Antigravity",
+    apiSpec: "gemini_antigravity",
+    defaultApiBase: SPEC_DEFAULTS.gemini_antigravity,
+  },
+  {
+    value: "opencode",
+    label: "OpenCode",
+    apiSpec: "opencode",
+    defaultApiBase: SPEC_DEFAULTS.opencode,
+  },
+  {
+    value: "hermes",
+    label: "Hermes Agent",
+    apiSpec: "claude_managed_agents",
+    defaultAlias: "hermes",
+    defaultApiBase: "http://127.0.0.1:8080",
+  },
 ];
 
 const RESERVED_ALIASES = new Set([
@@ -149,21 +176,28 @@ function AddHarnessModal({
   onCreated: (harnesses: RuntimeHarness[]) => void;
 }) {
   const [alias, setAlias] = useState("");
+  const [runtimeOption, setRuntimeOption] = useState("claude_managed_agents");
   const [apiSpec, setApiSpec] = useState("claude_managed_agents");
   const [apiBase, setApiBase] = useState(SPEC_DEFAULTS.claude_managed_agents);
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSpecChange = (spec: string | null) => {
-    if (!spec) return;
-    setApiSpec(spec);
-    setApiBase(SPEC_DEFAULTS[spec] ?? "");
+  const handleRuntimeOptionChange = (value: string | null) => {
+    const option = RUNTIME_OPTIONS.find((candidate) => candidate.value === value);
+    if (!option) return;
+    setRuntimeOption(option.value);
+    setApiSpec(option.apiSpec);
+    setApiBase(option.defaultApiBase);
+    if (!alias.trim() && option.defaultAlias) {
+      setAlias(option.defaultAlias);
+    }
   };
 
   const reset = () => {
     setAlias("");
     setApiKey("");
+    setRuntimeOption("claude_managed_agents");
     setApiSpec("claude_managed_agents");
     setApiBase(SPEC_DEFAULTS.claude_managed_agents);
     setError(null);
@@ -234,13 +268,13 @@ function AddHarnessModal({
             />
           </div>
           <div className="grid gap-1.5">
-            <Label>API spec</Label>
-            <Select value={apiSpec} onValueChange={handleSpecChange}>
+            <Label>Runtime</Label>
+            <Select value={runtimeOption} onValueChange={handleRuntimeOptionChange}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {SPEC_OPTIONS.map((option) => (
+                {RUNTIME_OPTIONS.map((option) => (
                   <SelectItem key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>
