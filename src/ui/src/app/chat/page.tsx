@@ -530,13 +530,19 @@ function ChatInner() {
     setModel((prev) => (initialModels.includes(prev) ? prev : initialModels[0] ?? ""));
     listModels(sessionRuntime).then((fetched) => {
       if (cancelled) return;
-      setModels(fetched);
-      setModel((prev) => (fetched.includes(prev) ? prev : fetched[0] ?? ""));
+      const nextModels = sessionRuntime ? fetched : fetched.length > 0 ? fetched : FALLBACK_MODELS;
+      setModels(nextModels);
+      setModel((prev) => (nextModels.includes(prev) ? prev : nextModels[0] ?? ""));
     }).catch((err) => {
       if (cancelled) return;
-      setModels([]);
-      setModel("");
-      if (sessionRuntime) setError(err instanceof Error ? err.message : String(err));
+      if (sessionRuntime) {
+        setModels([]);
+        setModel("");
+        setError(err instanceof Error ? err.message : String(err));
+      } else {
+        setModels(FALLBACK_MODELS);
+        setModel((prev) => (FALLBACK_MODELS.includes(prev) ? prev : FALLBACK_MODELS[0]));
+      }
     });
     return () => {
       cancelled = true;
@@ -553,7 +559,10 @@ function ChatInner() {
     setQueuedPrompts([]);
     setInterruptingQueuedPromptId(null);
     setError(null);
+    setSessionRuntime(undefined);
     setSessionLoaded(false);
+    setSessionStatus("idle");
+    setSessionHarness("claude-code");
     setProviderSessionId(undefined);
     setProviderUrl(undefined);
     setSessionTitle("");
