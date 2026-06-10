@@ -991,7 +991,7 @@ function AgentDraftControls({
             <Label className="text-[#c9c0b1]">Runtime</Label>
             <Select
               value={draft.runtime || "claude_managed_agents"}
-              onValueChange={(v) => update({ runtime: v ?? "claude_managed_agents" })}
+              onValueChange={(v) => update({ runtime: v ?? "claude_managed_agents", model: "" })}
             >
               <SelectTrigger className="h-11 w-full max-w-sm overflow-hidden border-white/10 bg-[#242321] px-3 text-[#f7f2e8]">
                 <RuntimeSelectOption
