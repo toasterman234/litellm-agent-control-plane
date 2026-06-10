@@ -8,6 +8,7 @@ use crate::{
     errors::GatewayError,
     http::{credential_overrides, llm},
     proxy::{auth::master_key::require_any_gateway_key, state::AppState},
+    sdk::routing::Route,
 };
 
 pub async fn messages(
@@ -24,7 +25,16 @@ pub async fn messages(
         .ok_or(GatewayError::MissingModel)?
         .to_owned();
     let route = credential_overrides::apply(&state, state.router.resolve(&model)?).await?;
+    send_messages_request(state, headers, body, model, route).await
+}
 
+async fn send_messages_request(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    body: Value,
+    model: String,
+    route: Route,
+) -> Result<Response, GatewayError> {
     let prepared =
         route
             .handler
@@ -39,6 +49,16 @@ pub async fn messages(
         &headers,
     );
 
+    let upstream = send_upstream(&state, &route, prepared, &mut payload).await?;
+    build_messages_response(state, route, upstream, stream, payload).await
+}
+
+async fn send_upstream(
+    state: &AppState,
+    route: &Route,
+    prepared: crate::sdk::providers::ProviderRequest,
+    payload: &mut StandardLoggingPayload,
+) -> Result<reqwest::Response, GatewayError> {
     let upstream = match llm::send_request(
         &state.http,
         route.handler.messages_url(&route.deployment),
@@ -52,10 +72,20 @@ pub async fn messages(
                 "upstream_request_error",
                 error.to_string(),
             ));
-            state.callbacks.on_error(payload);
+            state.callbacks.on_error(payload.clone());
             return Err(error);
         }
     };
+    Ok(upstream)
+}
+
+async fn build_messages_response(
+    state: Arc<AppState>,
+    route: Route,
+    upstream: reqwest::Response,
+    stream: bool,
+    payload: StandardLoggingPayload,
+) -> Result<Response, GatewayError> {
     let response_headers = route
         .handler
         .transform_messages_response_headers(upstream.headers(), stream);
