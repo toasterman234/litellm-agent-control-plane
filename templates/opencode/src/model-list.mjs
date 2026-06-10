@@ -1,18 +1,3 @@
-export function modelListFromIds(ids, ownedBy = "litellm") {
-  return {
-    object: "list",
-    data: ids
-      .map((id) => (typeof id === "string" ? id.trim() : ""))
-      .filter(Boolean)
-      .map((id) => ({
-        id,
-        object: "model",
-        created: 0,
-        owned_by: ownedBy,
-      })),
-  };
-}
-
 export function modelListFromValue(value, ownedBy = "litellm") {
   const items = Array.isArray(value?.data)
     ? value.data
