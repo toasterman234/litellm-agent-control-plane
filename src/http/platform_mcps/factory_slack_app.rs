@@ -23,6 +23,7 @@ use crate::{
 
 use super::{
     factory::{agent_url, FACTORY_RUNTIME},
+    factory_slack_dm_access::{allowed_dm_user_ids, child_allowed_dm_user_ids, optional_str},
     factory_slack_manifest::{build_child_manifest, install_url},
     required_str,
 };
@@ -289,54 +290,4 @@ fn required_owned(value: Option<String>, message: &str) -> Result<String, Gatewa
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| GatewayError::SandboxError(message.to_owned()))
-}
-
-fn optional_str<'a>(arguments: &'a Value, field: &str) -> Option<&'a str> {
-    arguments
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn allowed_dm_user_ids(arguments: &Value) -> Vec<String> {
-    let values = arguments
-        .get("allowed_dm_user_ids")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .chain(
-            arguments
-                .get("allowed_dm_user_ids")
-                .and_then(Value::as_str)
-                .into_iter()
-                .flat_map(|value| value.split(|ch: char| matches!(ch, ',' | '\n' | ' ' | '\t'))),
-        );
-    let mut ids = Vec::new();
-    for value in values {
-        let id = value
-            .trim()
-            .trim_start_matches("<@")
-            .trim_end_matches('>')
-            .trim();
-        if id.is_empty() || ids.iter().any(|existing| existing == id) {
-            continue;
-        }
-        ids.push(id.to_owned());
-    }
-    ids
-}
-
-fn child_allowed_dm_user_ids(child: &ManagedAgentRow) -> Vec<String> {
-    child
-        .config
-        .get("slack")
-        .and_then(|slack| slack.get("allowed_dm_user_ids"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect()
 }
