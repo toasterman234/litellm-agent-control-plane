@@ -63,18 +63,38 @@ interface SlackCredentials {
 }
 
 function normalizeSlackUserId(value: string) {
-  return value.trim().replace(/^<@/, "").replace(/>$/, "").trim();
+  const token = value
+    .trim()
+    .replace(/^[,;:.!?()[\]{}"']+|[,;:.!?()[\]{}"']+$/g, "")
+    .trim()
+    .replace(/^<@/, "")
+    .replace(/^@/, "")
+    .replace(/>$/, "")
+    .split("|")[0]
+    .trim()
+    .toUpperCase();
+  return /^[UW][A-Z0-9]{2,}$/.test(token) ? token : null;
 }
 
 function parseAllowedDmUserIds(value: string): string[] {
   const ids: string[] = [];
-  value
-    .split(/[,\s]+/)
-    .map(normalizeSlackUserId)
-    .filter(Boolean)
-    .forEach((id) => {
-      if (!ids.some((existing) => existing.toLowerCase() === id.toLowerCase())) ids.push(id);
-    });
+  const invalidIds: string[] = [];
+  value.split(/[,\s]+/).forEach((entry) => {
+    const trimmed = entry.trim();
+    if (!trimmed) return;
+    const id = normalizeSlackUserId(trimmed);
+    if (!id) {
+      invalidIds.push(trimmed);
+      return;
+    }
+    if (!ids.includes(id)) ids.push(id);
+  });
+  if (invalidIds.length) {
+    const invalidList = invalidIds.join(", ");
+    throw new Error(
+      `Enter valid Slack user IDs like U0123456789 or <@U0123456789>. Invalid: ${invalidList}`,
+    );
+  }
   return ids;
 }
 

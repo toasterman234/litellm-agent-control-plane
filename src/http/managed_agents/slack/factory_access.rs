@@ -34,7 +34,7 @@ fn requested_dm_allowlist(message: &SlackIncomingMessage) -> Vec<String> {
 
 fn dm_limit_requested(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
-    let names_dms = lower.contains("dm") || lower.contains("direct message");
+    let names_dms = names_direct_messages(&lower);
     let restricts = [
         "only",
         "limit",
@@ -47,6 +47,22 @@ fn dm_limit_requested(prompt: &str) -> bool {
     .iter()
     .any(|word| lower.contains(word));
     names_dms && restricts
+}
+
+fn names_direct_messages(lower_prompt: &str) -> bool {
+    let mut previous = "";
+    for word in lower_prompt
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+    {
+        if matches!(word, "dm" | "dms")
+            || (previous == "direct" && matches!(word, "message" | "messages"))
+        {
+            return true;
+        }
+        previous = word;
+    }
+    false
 }
 
 fn mentions_requester_only(prompt: &str) -> bool {
@@ -117,6 +133,26 @@ mod tests {
                 "create an agent that can summarize DMs from <@U123>",
                 Some("U999"),
             ),
+        );
+
+        assert_eq!(arguments["allowed_dm_user_ids"], json!([]));
+    }
+
+    #[test]
+    fn auto_connect_does_not_treat_admin_as_dm_limit() {
+        let arguments = auto_connect_arguments(
+            "agent_child",
+            &message("create an agent only for admin tasks", Some("U999")),
+        );
+
+        assert_eq!(arguments["allowed_dm_user_ids"], json!([]));
+    }
+
+    #[test]
+    fn auto_connect_does_not_treat_indirect_messages_as_dm_limit() {
+        let arguments = auto_connect_arguments(
+            "agent_child",
+            &message("create an agent only for indirect messages", Some("U999")),
         );
 
         assert_eq!(arguments["allowed_dm_user_ids"], json!([]));
