@@ -96,12 +96,19 @@ async fn run_google_chat_prompt(
         reply.run(event_stream.rx).await
     };
     match result {
-        Ok(()) => {
-            google_chat::repository::complete_event(&pool, &agent.id, &message.message_name)
-                .await?;
-            Ok(())
-        }
+        Ok(()) => complete_claim(&pool, &agent, &message).await,
         Err(error) => fail_claim(&pool, &agent, &message, error).await,
+    }
+}
+
+async fn complete_claim(
+    pool: &PgPool,
+    agent: &ManagedAgentRow,
+    message: &GoogleChatIncomingMessage,
+) -> Result<(), GatewayError> {
+    match google_chat::repository::complete_event(pool, &agent.id, &message.message_name).await {
+        Ok(()) => Ok(()),
+        Err(error) => fail_claim(pool, agent, message, error).await,
     }
 }
 

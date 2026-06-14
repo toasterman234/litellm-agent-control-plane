@@ -24,7 +24,7 @@ use super::{
     event_message::{can_start_session, incoming_message_for_app},
     reply::spawn_google_chat_prompt,
     session_lock::GoogleChatConversationLock,
-    types::{GoogleChatEvent, GoogleChatIncomingMessage},
+    types::{GoogleChatEvent, GoogleChatIncomingMessage, GoogleChatMessageMode},
 };
 
 pub(crate) async fn events(
@@ -101,14 +101,30 @@ async fn refresh_existing_session(
     agent: &ManagedAgentRow,
     message: &GoogleChatIncomingMessage,
 ) -> Result<Option<String>, GatewayError> {
-    let Some(row) =
-        google_chat::repository::get(pool, &agent.id, &message.conversation_key).await?
-    else {
-        return Ok(None);
+    let row = match google_chat::repository::get(pool, &agent.id, &message.conversation_key).await?
+    {
+        Some(row) => row,
+        None => match space_session_fallback_key(message) {
+            Some(key) => match google_chat::repository::get(pool, &agent.id, key).await? {
+                Some(row) => row,
+                None => return Ok(None),
+            },
+            None => return Ok(None),
+        },
     };
     Ok(Some(
         upsert_session(pool, agent, message, &row.session_id).await?,
     ))
+}
+
+fn space_session_fallback_key(message: &GoogleChatIncomingMessage) -> Option<&str> {
+    if !matches!(message.mode, GoogleChatMessageMode::ChannelMessage) {
+        return None;
+    }
+    if message.thread_name.is_none() || message.conversation_key == message.space_name {
+        return None;
+    }
+    Some(message.space_name.as_str())
 }
 
 async fn create_session(
@@ -177,3 +193,7 @@ fn agent_runtime(agent: &ManagedAgentRow) -> String {
 #[cfg(test)]
 #[path = "events_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "events_session_tests.rs"]
+mod session_tests;
