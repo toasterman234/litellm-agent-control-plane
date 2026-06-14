@@ -9,6 +9,8 @@ services:
     envVars:
       - key: PORT
         value: "8080"
+      - key: HOME
+        value: /var/data
       - key: DB_PATH
         value: /var/data/agents.db
       - key: DEFAULT_MODEL
