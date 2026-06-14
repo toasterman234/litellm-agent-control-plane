@@ -115,6 +115,8 @@ const GMAIL_TEMPLATE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.compose",
 ];
 
+const GMAIL_TEMPLATE_RESOURCE = "https://gmailmcp.googleapis.com/mcp";
+
 type McpServersTab = "servers" | "templates";
 
 const MCP_SERVERS_TABS: { id: McpServersTab; label: string }[] = [
@@ -136,11 +138,11 @@ const GMAIL_TEMPLATE_STEPS: {
     eyebrow: "Cloud APIs",
     icon: Server,
     body:
-      "Create or select a Google Cloud project, then enable both Gmail APIs for the project.",
+      "Create or select the Google Cloud project that owns the OAuth client, then enable both Gmail services.",
     details: [
       "Run gcloud auth login --update-adc if the CLI is not authenticated.",
       "Run gcloud services enable gmail.googleapis.com gmailmcp.googleapis.com --project=PROJECT_ID.",
-      "Keep the project ID handy for OAuth consent and credentials.",
+      "Use this same project for Google Auth Platform, the Web OAuth client, and quota/debugging.",
     ],
     code:
       "gcloud services enable gmail.googleapis.com gmailmcp.googleapis.com --project=PROJECT_ID",
@@ -153,8 +155,9 @@ const GMAIL_TEMPLATE_STEPS: {
       "Configure the consent screen that users see before they grant Gmail access to agents.",
     details: [
       "Use an internal audience for your Workspace, or external if users are outside the Workspace.",
-      "Add the Gmail readonly and compose scopes.",
-      "External apps using these scopes may need Google verification before broad rollout.",
+      "Add Gmail readonly and compose scopes for search/read/draft-only access.",
+      "Add gmail.modify only if you intentionally expose label mutation tools.",
+      "Do not add Gmail send tools until the agent runtime has explicit human approval.",
     ],
     code: GMAIL_TEMPLATE_SCOPES.join("\n"),
     link: {
@@ -167,14 +170,16 @@ const GMAIL_TEMPLATE_STEPS: {
     eyebrow: "Web application",
     icon: KeyRound,
     body:
-      "Create the web client that redirects users back to LAP after Google consent.",
+      "Create a Web application OAuth client. Do not use the Desktop client type for this flow.",
     details: [
       "Application type: Web application.",
-      "Redirect URI: https://YOUR_LAP_PUBLIC_URL/v1/mcp/oauth/callback.",
+      "Redirect URI must exactly match the LAP origin users open: https://YOUR_LAP_PUBLIC_URL/v1/mcp/oauth/callback.",
+      "For local backend-served LAP, use http://localhost:4000/v1/mcp/oauth/callback.",
+      "For the separate Next dev server proxy, use http://localhost:3213/v1/mcp/oauth/callback.",
       "Save the client ID and client secret on the Gmail MCP server record.",
     ],
     code:
-      "GOOGLE_OAUTH_CLIENT_ID=...\nGOOGLE_OAUTH_CLIENT_SECRET=...\nLITELLM_PROXY_BASE_URL=https://YOUR_LAP_PUBLIC_URL",
+      "Application type: Web application\nAuthorized redirect URI: https://YOUR_LAP_PUBLIC_URL/v1/mcp/oauth/callback",
   },
   {
     title: "LAP connector",
@@ -183,12 +188,35 @@ const GMAIL_TEMPLATE_STEPS: {
     body:
       "Register the Gmail MCP server once, then send users to Integrations to click Connect Gmail.",
     details: [
-      "Set auth_type to oauth2 and store the Google OAuth client ID and secret on the server record.",
-      "Expose only read and draft tools; keep final email sending behind a future approval flow.",
-      "Proxy Gmail MCP requests through LAP and inject Authorization: Bearer <access_token>.",
+      "Set auth_type to oauth2 with Google's auth and token URLs.",
+      "Store oauth_client_id and oauth_client_secret in the server credentials.",
+      "Store the Gmail MCP resource value in mcp_info.oauth.resource so OAuth requests include the protected resource.",
+      "Expose only read and draft tools: search_threads, get_thread, create_draft, list_drafts, list_labels.",
     ],
     code:
-      "POST /v1/mcp/server/{server_id}/oauth/start\nGET /v1/mcp/oauth/callback\nGET /v1/mcp/user-credentials\nDELETE /v1/mcp/server/{server_id}/user-credential",
+      `url=https://gmailmcp.googleapis.com/mcp/v1
+transport=streamable_http
+auth_type=oauth2
+authorization_url=https://accounts.google.com/o/oauth2/v2/auth
+token_url=https://oauth2.googleapis.com/token
+mcp_info.oauth.resource=${GMAIL_TEMPLATE_RESOURCE}`,
+  },
+  {
+    title: "Verification",
+    eyebrow: "Google MCP",
+    icon: Zap,
+    body:
+      "After a user connects Gmail, verify OAuth separately from Google's hosted MCP execution.",
+    details: [
+      "The Integrations page should show Gmail as Connected after Google redirects back to LAP.",
+      "A direct Gmail API call with the stored token should succeed before testing Gmail MCP tools.",
+      "tools/list can succeed even when tools/call is blocked by Google, so test search_threads too.",
+      "If direct Gmail API works but tools/call returns 'The caller does not have permission', check Google Workspace Developer Preview or project entitlement for hosted Gmail MCP.",
+    ],
+    code:
+      `GET /v1/mcp/user-credentials
+POST /gmail/mcp {"method":"tools/list"}
+POST /gmail/mcp {"method":"tools/call","params":{"name":"search_threads","arguments":{"query":"in:inbox newer_than:7d","pageSize":1}}}`,
   },
 ];
 
@@ -729,7 +757,7 @@ function McpTemplatesPanel({ onOpenGmail }: { onOpenGmail: () => void }) {
               </span>
             </div>
             <p className="mt-2 text-sm leading-5 text-muted-foreground">
-              Guided setup for Google&apos;s hosted Gmail MCP server.
+              OAuth setup checklist for Google&apos;s hosted Gmail MCP server.
             </p>
           </div>
           <div className="mt-5 flex flex-wrap gap-1.5">
@@ -780,7 +808,7 @@ function GmailTemplateDialog({
                 </Badge>
               </div>
               <DialogDescription className="mt-1">
-                Connect non-technical users to Gmail by preparing Google OAuth and the LAP MCP connector.
+                Prepare Google OAuth once so users can connect Gmail from Integrations.
               </DialogDescription>
             </div>
           </div>
