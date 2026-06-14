@@ -1,0 +1,198 @@
+use serde_json::{json, Value};
+
+use super::{agent_runtime, event_key, incoming_message, GoogleChatEvent};
+use crate::{
+    db::managed_agents::registry::schema::ManagedAgentRow,
+    sdk::agents::CLAUDE_MANAGED_AGENTS,
+    http::managed_agents::google_chat::types::{
+        GoogleChatIncomingMessage, GoogleChatMessageMode,
+    },
+};
+
+#[test]
+fn incoming_message_ignores_added_to_space_event() {
+    let result = incoming_message(event(json!({
+        "type": "ADDED_TO_SPACE",
+        "space": { "name": "spaces/AAA", "type": "ROOM" }
+    })));
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn incoming_message_ignores_removed_from_space_event() {
+    let result = incoming_message(event(json!({
+        "type": "REMOVED_FROM_SPACE",
+        "space": { "name": "spaces/AAA", "type": "ROOM" }
+    })));
+
+    assert!(result.is_none());
+}
+
+#[test]
+fn incoming_message_ignores_bot_sender() {
+    // Bot detected via event.user.type
+    let via_event_user = incoming_message(event(json!({
+        "type": "MESSAGE",
+        "user": { "name": "users/bot-1", "type": "BOT" },
+        "message": {
+            "name": "spaces/AAA/messages/msg-1",
+            "text": "hello",
+            "space": { "name": "spaces/AAA", "type": "DM" }
+        },
+        "space": { "name": "spaces/AAA", "type": "DM" }
+    })));
+
+    // Bot detected via message.sender.type
+    let via_sender = incoming_message(event(json!({
+        "type": "MESSAGE",
+        "message": {
+            "name": "spaces/AAA/messages/msg-2",
+            "text": "hello",
+            "sender": { "name": "users/bot-1", "type": "BOT" },
+            "space": { "name": "spaces/AAA", "type": "DM" }
+        },
+        "space": { "name": "spaces/AAA", "type": "DM" }
+    })));
+
+    assert!(via_event_user.is_none());
+    assert!(via_sender.is_none());
+}
+
+#[test]
+fn incoming_message_dm_uses_space_as_conversation_key() {
+    let result = incoming_message(event(json!({
+        "type": "MESSAGE",
+        "user": { "name": "users/human-1", "type": "HUMAN" },
+        "message": {
+            "name": "spaces/AAA/messages/msg-1",
+            "text": "hello",
+            "space": { "name": "spaces/AAA", "type": "DM" },
+            "thread": { "name": "spaces/AAA/threads/thread-1" }
+        },
+        "space": { "name": "spaces/AAA", "type": "DM" }
+    })))
+    .unwrap();
+
+    assert_eq!(result.mode, GoogleChatMessageMode::DirectMessage);
+    assert_eq!(result.conversation_key, "spaces/AAA");
+    assert_eq!(result.space_name, "spaces/AAA");
+}
+
+#[test]
+fn incoming_message_space_mention_uses_thread_as_conversation_key() {
+    let result = incoming_message(event(json!({
+        "type": "MESSAGE",
+        "user": { "name": "users/human-1", "type": "HUMAN" },
+        "message": {
+            "name": "spaces/ROOM/messages/msg-1",
+            "text": "@Bot do the thing",
+            "space": { "name": "spaces/ROOM", "type": "ROOM" },
+            "thread": { "name": "spaces/ROOM/threads/thread-42" },
+            "annotations": [
+                { "type": "USER_MENTION" }
+            ]
+        },
+        "space": { "name": "spaces/ROOM", "type": "ROOM" }
+    })))
+    .unwrap();
+
+    assert_eq!(result.mode, GoogleChatMessageMode::ChannelMention);
+    assert_eq!(result.conversation_key, "spaces/ROOM/threads/thread-42");
+    assert_eq!(result.thread_name.as_deref(), Some("spaces/ROOM/threads/thread-42"));
+}
+
+#[test]
+fn incoming_message_unbound_space_message_without_mention_is_channel_message() {
+    let result = incoming_message(event(json!({
+        "type": "MESSAGE",
+        "user": { "name": "users/human-1", "type": "HUMAN" },
+        "message": {
+            "name": "spaces/ROOM/messages/msg-1",
+            "text": "general update",
+            "space": { "name": "spaces/ROOM", "type": "ROOM" },
+            "thread": { "name": "spaces/ROOM/threads/thread-99" }
+        },
+        "space": { "name": "spaces/ROOM", "type": "ROOM" }
+    })))
+    .unwrap();
+
+    assert_eq!(result.mode, GoogleChatMessageMode::ChannelMessage);
+    assert_eq!(result.conversation_key, "spaces/ROOM/threads/thread-99");
+}
+
+#[test]
+fn incoming_message_channel_message_without_thread_falls_back_to_space() {
+    let result = incoming_message(event(json!({
+        "type": "MESSAGE",
+        "user": { "name": "users/human-1", "type": "HUMAN" },
+        "message": {
+            "name": "spaces/ROOM/messages/msg-1",
+            "text": "general update",
+            "space": { "name": "spaces/ROOM", "type": "ROOM" }
+        },
+        "space": { "name": "spaces/ROOM", "type": "ROOM" }
+    })))
+    .unwrap();
+
+    assert_eq!(result.mode, GoogleChatMessageMode::ChannelMessage);
+    assert_eq!(result.conversation_key, "spaces/ROOM");
+    assert!(result.thread_name.is_none());
+}
+
+#[test]
+fn event_key_is_message_name() {
+    let message = GoogleChatIncomingMessage {
+        message_name: "spaces/AAA/messages/msg-xyz".to_owned(),
+        space_name: "spaces/AAA".to_owned(),
+        thread_name: None,
+        conversation_key: "spaces/AAA".to_owned(),
+        user_name: None,
+        prompt: "hello".to_owned(),
+        mode: GoogleChatMessageMode::DirectMessage,
+    };
+
+    assert_eq!(event_key(&message), "spaces/AAA/messages/msg-xyz");
+}
+
+#[test]
+fn agent_runtime_defaults_to_claude_managed_agents() {
+    assert_eq!(agent_runtime(&agent(json!({}))), CLAUDE_MANAGED_AGENTS);
+    assert_eq!(
+        agent_runtime(&agent(json!({ "runtime": " cursor " }))),
+        "cursor"
+    );
+}
+
+fn event(value: Value) -> GoogleChatEvent {
+    serde_json::from_value(value).unwrap()
+}
+
+fn agent(config: Value) -> ManagedAgentRow {
+    ManagedAgentRow {
+        id: "agent-1".to_owned(),
+        name: "Agent".to_owned(),
+        model: "openai/gpt-5-mini".to_owned(),
+        system: "system".to_owned(),
+        tools: json!([]),
+        cadence: None,
+        interval_seconds: None,
+        session_id: Some("session-1".to_owned()),
+        loop_id: None,
+        created_at: 0,
+        prompt: None,
+        cron: None,
+        timezone: "UTC".to_owned(),
+        vault_keys: json!([]),
+        setup_commands: json!([]),
+        max_runtime_minutes: 30,
+        on_failure: "pause".to_owned(),
+        config,
+        owner_id: None,
+        status: "active".to_owned(),
+        description: None,
+        harness: CLAUDE_MANAGED_AGENTS.to_owned(),
+        skill_ids: json!([]),
+        rule_ids: json!([]),
+    }
+}

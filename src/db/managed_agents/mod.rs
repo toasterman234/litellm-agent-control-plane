@@ -15,6 +15,7 @@ pub mod saved;
 pub mod sessions;
 pub mod settings;
 pub mod skills;
+pub mod google_chat;
 pub mod slack;
 pub mod spend_logs;
 pub mod teams;
