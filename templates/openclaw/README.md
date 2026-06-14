@@ -164,6 +164,9 @@ The server implements the subset LAP needs:
 - `GET /v1/sessions/{id}/events/stream`
 - `POST /v1/sessions/{id}/abort`
 
+`POST /v1/sessions/{id}/events` also accepts a `user.interrupt` event and maps
+it to the same abort handling used by LAP's interrupt flow.
+
 The stream emits Anthropic-shaped event frames:
 
 - `user.message`

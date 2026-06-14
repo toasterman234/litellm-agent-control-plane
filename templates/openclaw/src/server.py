@@ -272,12 +272,45 @@ def list_events(session_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def latest_turn_events(session_id: str) -> list[dict[str, Any]]:
-    events = list_events(session_id)
+def latest_turn_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for index in range(len(events) - 1, -1, -1):
         if events[index]["event"] == "user.message":
             return events[index:]
     return events
+
+
+def latest_turn_events(session_id: str) -> list[dict[str, Any]]:
+    return latest_turn_from_events(list_events(session_id))
+
+
+def has_interrupt(events: list[dict[str, Any]]) -> bool:
+    return any(event.get("type") == "user.interrupt" for event in events)
+
+
+def drain_queue(input_queue: "queue.Queue[Any]") -> None:
+    while True:
+        try:
+            input_queue.get_nowait()
+        except queue.Empty:
+            break
+
+
+def request_abort(session_id: str) -> dict[str, Any]:
+    with state_lock:
+        abort_flag = abort_flags.setdefault(session_id, threading.Event())
+        abort_flag.set()
+        pending = pending_prompts.setdefault(session_id, queue.Queue())
+        drain_queue(pending)
+        q = run_queues.get(session_id)
+    append_event(
+        session_id,
+        "session.error",
+        {"error": {"message": "session abort requested"}},
+    )
+    set_session_status(session_id, "error")
+    if q:
+        q.put({"event": "__done__", "data": {}})
+    return {"aborted": True}
 
 
 def user_text(events: list[dict[str, Any]]) -> str:
@@ -458,19 +491,15 @@ def run_agent(session_id: str, prompt: str) -> None:
         return
 
     while True:
+        with state_lock:
+            abort_flag = abort_flags.setdefault(session_id, threading.Event())
+            if abort_flag.is_set():
+                break
         set_session_status(session_id, "running")
         append_event(session_id, "session.status_running", {})
-        abort_flag = abort_flags.setdefault(session_id, threading.Event())
-        abort_flag.clear()
         try:
             payload = call_openclaw_chat(session_id, prompt, agent_row)
             if abort_flag.is_set():
-                append_event(
-                    session_id,
-                    "session.error",
-                    {"error": {"message": "session aborted"}},
-                )
-                set_session_status(session_id, "error")
                 break
             for tool_call in parse_chat_tool_calls(payload):
                 append_event(session_id, "agent.tool_use", tool_call)
@@ -498,6 +527,9 @@ def run_agent(session_id: str, prompt: str) -> None:
 
         with state_lock:
             pending = pending_prompts.setdefault(session_id, queue.Queue())
+            if abort_flag.is_set():
+                drain_queue(pending)
+                break
             try:
                 prompt = pending.get_nowait()
             except queue.Empty:
@@ -644,16 +676,33 @@ def create_session(input: CreateSessionRequest) -> dict[str, Any]:
 def send_events(session_id: str, input: SendEventsRequest) -> dict[str, Any]:
     if not get_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
+    if has_interrupt(input.events):
+        return request_abort(session_id)
     prompt = user_text(input.events)
     if not prompt:
         raise HTTPException(status_code=400, detail="no user.message text")
+    with state_lock:
+        abort_flag = abort_flags.setdefault(session_id, threading.Event())
+        if active_runs.get(session_id) and abort_flag.is_set():
+            return JSONResponse(
+                status_code=409,
+                content={"error": "session abort is still in progress"},
+            )
     append_event(session_id, "user.message", user_message_data(input.events))
     with state_lock:
         run_queues.setdefault(session_id, queue.Queue())
         pending_prompts.setdefault(session_id, queue.Queue())
         if active_runs.get(session_id):
+            if abort_flag.is_set():
+                return JSONResponse(
+                    status_code=409,
+                    content={"error": "session abort is still in progress"},
+                )
             pending_prompts[session_id].put(prompt)
             return JSONResponse(status_code=202, content={"ok": True, "queued": True})
+        abort_flag.clear()
+        run_queues[session_id] = queue.Queue()
+        drain_queue(pending_prompts[session_id])
         active_runs[session_id] = True
     thread = threading.Thread(target=run_agent, args=(session_id, prompt), daemon=True)
     thread.start()
@@ -671,19 +720,7 @@ def get_events(session_id: str) -> dict[str, Any]:
 def abort_session(session_id: str) -> dict[str, Any]:
     if not get_session(session_id):
         raise HTTPException(status_code=404, detail="session not found")
-    with state_lock:
-        abort_flags.setdefault(session_id, threading.Event()).set()
-        active_runs[session_id] = False
-        q = run_queues.get(session_id)
-    append_event(
-        session_id,
-        "session.error",
-        {"error": {"message": "session abort requested"}},
-    )
-    set_session_status(session_id, "error")
-    if q:
-        q.put({"event": "__done__", "data": {}})
-    return {"aborted": True}
+    return request_abort(session_id)
 
 
 def sse_frame(item: dict[str, Any]) -> str:
@@ -698,7 +735,7 @@ def stream_events(session_id: str, x_api_key: str | None = Header(default=None))
 
     def generate():
         initial_events = list_events(session_id)
-        replayed = latest_turn_events(session_id)
+        replayed = latest_turn_from_events(initial_events)
         seen_ids = {item["id"] for item in initial_events if item.get("id") is not None}
         for item in replayed:
             yield sse_frame(item)
