@@ -29,6 +29,7 @@ const SLACK_BOT_SCOPES = [
   "groups:history",
   "groups:read",
   "groups:write",
+  "groups:write.invites",
   "im:history",
   "im:read",
   "im:write",
