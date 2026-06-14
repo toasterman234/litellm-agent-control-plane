@@ -1,7 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+mod filter;
+
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::{Path, State},
@@ -21,6 +20,7 @@ use crate::{
 };
 
 use super::{build_vars_map, substitute_vars};
+use filter::filter_allowed_tools;
 
 #[derive(Debug, Serialize)]
 pub struct ToolsResponse {
@@ -250,33 +250,6 @@ pub async fn test_tools(
     let req = apply_static_headers(req, &server.static_headers, &vars);
     let tools = filter_allowed_tools(fetch_tools(req).await?, &server.allowed_tools);
     Ok(Json(ToolsResponse { server_id, tools }))
-}
-
-fn filter_allowed_tools(tools: Vec<Value>, allowed_tools: &Value) -> Vec<Value> {
-    let allowed = allowed_tool_names(allowed_tools);
-    if allowed.is_empty() {
-        return tools;
-    }
-    tools
-        .into_iter()
-        .filter(|tool| {
-            tool.get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| allowed.contains(name))
-        })
-        .collect()
-}
-
-fn allowed_tool_names(value: &Value) -> HashSet<String> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 fn build_instance_vars(server: &McpServerRow, enc_key: Option<&str>) -> HashMap<String, String> {
