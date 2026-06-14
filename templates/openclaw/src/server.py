@@ -742,28 +742,24 @@ def send_events(session_id: str, input: SendEventsRequest) -> dict[str, Any]:
     prompt = user_text(input.events)
     if not prompt:
         raise HTTPException(status_code=400, detail="no user.message text")
+    message_data = user_message_data(input.events)
     with state_lock:
         abort_flag = abort_flags.setdefault(session_id, threading.Event())
+        run_queue = run_queues.setdefault(session_id, queue.Queue())
+        pending = pending_prompts.setdefault(session_id, queue.Queue())
         if active_runs.get(session_id) and abort_flag.is_set():
             return JSONResponse(
                 status_code=409,
                 content={"error": "session abort is still in progress"},
             )
-    append_event(session_id, "user.message", user_message_data(input.events))
-    with state_lock:
-        run_queues.setdefault(session_id, queue.Queue())
-        pending_prompts.setdefault(session_id, queue.Queue())
         if active_runs.get(session_id):
-            if abort_flag.is_set():
-                return JSONResponse(
-                    status_code=409,
-                    content={"error": "session abort is still in progress"},
-                )
-            pending_prompts[session_id].put(prompt)
+            enqueue_event(session_id, store_event(session_id, "user.message", message_data))
+            pending.put(prompt)
             return JSONResponse(status_code=202, content={"ok": True, "queued": True})
         abort_flag.clear()
-        run_queues[session_id] = queue.Queue()
-        drain_queue(pending_prompts[session_id])
+        drain_queue(run_queue)
+        drain_queue(pending)
+        enqueue_event(session_id, store_event(session_id, "user.message", message_data))
         active_runs[session_id] = True
     thread = threading.Thread(target=run_agent, args=(session_id, prompt), daemon=True)
     thread.start()
