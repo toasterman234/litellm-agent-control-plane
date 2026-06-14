@@ -1,12 +1,10 @@
 use serde_json::{json, Value};
 
-use super::{agent_runtime, event_key, incoming_message, GoogleChatEvent};
+use super::{agent_runtime, can_start_session, incoming_message, GoogleChatEvent};
 use crate::{
     db::managed_agents::registry::schema::ManagedAgentRow,
+    http::managed_agents::google_chat::types::{GoogleChatIncomingMessage, GoogleChatMessageMode},
     sdk::agents::CLAUDE_MANAGED_AGENTS,
-    http::managed_agents::google_chat::types::{
-        GoogleChatIncomingMessage, GoogleChatMessageMode,
-    },
 };
 
 #[test]
@@ -99,7 +97,10 @@ fn incoming_message_space_mention_uses_thread_as_conversation_key() {
 
     assert_eq!(result.mode, GoogleChatMessageMode::ChannelMention);
     assert_eq!(result.conversation_key, "spaces/ROOM/threads/thread-42");
-    assert_eq!(result.thread_name.as_deref(), Some("spaces/ROOM/threads/thread-42"));
+    assert_eq!(
+        result.thread_name.as_deref(),
+        Some("spaces/ROOM/threads/thread-42")
+    );
 }
 
 #[test]
@@ -141,18 +142,20 @@ fn incoming_message_channel_message_without_thread_falls_back_to_space() {
 }
 
 #[test]
-fn event_key_is_message_name() {
-    let message = GoogleChatIncomingMessage {
-        message_name: "spaces/AAA/messages/msg-xyz".to_owned(),
-        space_name: "spaces/AAA".to_owned(),
-        thread_name: None,
-        conversation_key: "spaces/AAA".to_owned(),
-        user_name: None,
-        prompt: "hello".to_owned(),
-        mode: GoogleChatMessageMode::DirectMessage,
-    };
+fn channel_messages_do_not_start_sessions() {
+    assert!(!can_start_session(&incoming(
+        GoogleChatMessageMode::ChannelMessage
+    )));
+}
 
-    assert_eq!(event_key(&message), "spaces/AAA/messages/msg-xyz");
+#[test]
+fn direct_messages_and_mentions_can_start_sessions() {
+    assert!(can_start_session(&incoming(
+        GoogleChatMessageMode::DirectMessage
+    )));
+    assert!(can_start_session(&incoming(
+        GoogleChatMessageMode::ChannelMention
+    )));
 }
 
 #[test]
@@ -194,5 +197,17 @@ fn agent(config: Value) -> ManagedAgentRow {
         harness: CLAUDE_MANAGED_AGENTS.to_owned(),
         skill_ids: json!([]),
         rule_ids: json!([]),
+    }
+}
+
+fn incoming(mode: GoogleChatMessageMode) -> GoogleChatIncomingMessage {
+    GoogleChatIncomingMessage {
+        message_name: "spaces/AAA/messages/msg-xyz".to_owned(),
+        space_name: "spaces/AAA".to_owned(),
+        thread_name: Some("spaces/AAA/threads/thread-1".to_owned()),
+        conversation_key: "spaces/AAA/threads/thread-1".to_owned(),
+        user_name: Some("users/human-1".to_owned()),
+        prompt: "hello".to_owned(),
+        mode,
     }
 }

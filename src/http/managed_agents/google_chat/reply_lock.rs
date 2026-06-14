@@ -9,7 +9,9 @@ pub(super) struct GoogleChatPromptLock {
 impl GoogleChatPromptLock {
     pub(super) async fn acquire(locks: &KeyedLockStore, session_id: &str) -> Self {
         Self {
-            _guard: locks.lock(&format!("google_chat_prompt:{session_id}")).await,
+            _guard: locks
+                .lock(&format!("google_chat_prompt:{session_id}"))
+                .await,
         }
     }
 }

@@ -8,7 +8,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::{
-    db::managed_agents::{registry::schema::ManagedAgentRow, google_chat},
+    db::managed_agents::{google_chat, registry::schema::ManagedAgentRow},
     errors::GatewayError,
     http::sessions::create_runtime_session_for_agent_without_prompt,
     proxy::state::AppState,
@@ -17,7 +17,7 @@ use crate::{
 
 use super::{
     auth,
-    config::{load_agent, google_chat_config},
+    config::{google_chat_config, load_agent},
     reply::spawn_google_chat_prompt,
     session_lock::GoogleChatConversationLock,
     types::{GoogleChatEvent, GoogleChatIncomingMessage, GoogleChatMessageMode},
@@ -36,22 +36,20 @@ pub(crate) async fn events(
         .clone();
     let agent = load_agent(&pool, &agent_id).await?;
     let config = google_chat_config(&agent)?;
-    let Some(auth_audience) = config
-        .auth_audience
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
+    let endpoint_audience = config_value(config.auth_audience.as_deref());
+    let project_number = config_value(config.project_number.as_deref());
+    if endpoint_audience.is_none() && project_number.is_none() {
         return Err(GatewayError::InvalidConfig(
-            "google_chat auth_audience is not configured".to_owned(),
+            "google_chat auth_audience or project_number is not configured".to_owned(),
         ));
-    };
+    }
     auth::verify_google_chat_request(
         &state.http,
         headers
             .get("authorization")
             .and_then(|value| value.to_str().ok()),
-        auth_audience,
+        endpoint_audience,
+        project_number,
     )
     .await?;
     let message = match incoming_message(event) {
@@ -64,8 +62,10 @@ pub(crate) async fn events(
         &message.conversation_key,
     )
     .await;
-    let session_id = ensure_session(state.clone(), &pool, &agent, &message).await?;
-    if !google_chat::repository::record_event(&pool, &agent.id, &event_key(&message)).await? {
+    let Some(session_id) = ensure_session(state.clone(), &pool, &agent, &message).await? else {
+        return Ok(StatusCode::OK);
+    };
+    if !google_chat::repository::record_event(&pool, &agent.id, &message.message_name).await? {
         return Ok(StatusCode::OK);
     }
     spawn_google_chat_prompt(state, pool, agent, config, message, session_id);
@@ -77,12 +77,17 @@ async fn ensure_session(
     pool: &sqlx::PgPool,
     agent: &ManagedAgentRow,
     message: &GoogleChatIncomingMessage,
-) -> Result<String, GatewayError> {
+) -> Result<Option<String>, GatewayError> {
     if let Some(session_id) = refresh_existing_session(pool, agent, message).await? {
-        return Ok(session_id);
+        return Ok(Some(session_id));
+    }
+    if !can_start_session(message) {
+        return Ok(None);
     }
     let session_id = create_session(state, pool, agent, message).await?;
-    upsert_session(pool, agent, message, &session_id).await
+    upsert_session(pool, agent, message, &session_id)
+        .await
+        .map(Some)
 }
 
 async fn refresh_existing_session(
@@ -111,7 +116,7 @@ async fn create_session(
         pool,
         agent.id.clone(),
         agent_runtime(agent),
-        session_title(message),
+        format!("Google Chat {}", message.space_name),
         session_metadata(message),
     )
     .await
@@ -137,10 +142,6 @@ async fn upsert_session(
     Ok(row.session_id)
 }
 
-fn session_title(message: &GoogleChatIncomingMessage) -> String {
-    format!("Google Chat {}", message.space_name)
-}
-
 fn session_metadata(message: &GoogleChatIncomingMessage) -> Value {
     json!({
         "source": "google_chat",
@@ -148,7 +149,15 @@ fn session_metadata(message: &GoogleChatIncomingMessage) -> Value {
         "thread_name": message.thread_name,
         "conversation_key": message.conversation_key,
         "user_name": message.user_name,
+        "mode": message.mode.as_str(),
     })
+}
+
+fn can_start_session(message: &GoogleChatIncomingMessage) -> bool {
+    !matches!(message.mode, GoogleChatMessageMode::ChannelMessage)
+}
+fn config_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn incoming_message(event: GoogleChatEvent) -> Option<GoogleChatIncomingMessage> {
@@ -156,7 +165,6 @@ fn incoming_message(event: GoogleChatEvent) -> Option<GoogleChatIncomingMessage>
         Some("ADDED_TO_SPACE") | Some("REMOVED_FROM_SPACE") | None => return None,
         _ => {}
     }
-    // Ignore bot messages
     let sender_type = event
         .user
         .as_ref()
@@ -172,63 +180,17 @@ fn incoming_message(event: GoogleChatEvent) -> Option<GoogleChatIncomingMessage>
         return None;
     }
     let message = event.message.as_ref()?;
-    let message_name = message
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)?;
-    let space_name = message
-        .space
-        .as_ref()
-        .and_then(|s| s.name.as_deref())
-        .or_else(|| event.space.as_ref().and_then(|s| s.name.as_deref()))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)?;
-    let thread_name = message
-        .thread
-        .as_ref()
-        .and_then(|t| t.name.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
-    let space_type = message
-        .space
-        .as_ref()
-        .and_then(|s| s.space_type.as_deref())
-        .or_else(|| event.space.as_ref().and_then(|s| s.space_type.as_deref()));
-    let has_user_mention = message
-        .annotations
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .any(|a| a.annotation_type.as_deref() == Some("USER_MENTION"));
-    let mode = if space_type == Some("DM") {
-        GoogleChatMessageMode::DirectMessage
-    } else if has_user_mention {
-        GoogleChatMessageMode::ChannelMention
-    } else {
-        GoogleChatMessageMode::ChannelMessage
-    };
-    let conversation_key = match mode {
-        GoogleChatMessageMode::DirectMessage => space_name.clone(),
-        GoogleChatMessageMode::ChannelMention | GoogleChatMessageMode::ChannelMessage => {
-            thread_name.clone().unwrap_or_else(|| space_name.clone())
-        }
-    };
-    let text = message.text.as_deref().unwrap_or_default();
-    let prompt = clean_prompt(text);
+    let message_name = non_empty(message.name.as_deref())?;
+    let space_name = space_name(&event, message)?;
+    let thread_name = thread_name(message);
+    let mode = message_mode(&event, message);
+    let conversation_key = conversation_key(&mode, &space_name, thread_name.as_deref());
+    let prompt = clean_prompt(message.text.as_deref().unwrap_or_default());
     let user_name = event
         .user
         .as_ref()
         .and_then(|u| u.name.clone())
-        .or_else(|| {
-            message
-                .sender
-                .as_ref()
-                .and_then(|s| s.name.clone())
-        });
+        .or_else(|| message.sender.as_ref().and_then(|s| s.name.clone()));
     Some(GoogleChatIncomingMessage {
         message_name,
         space_name,
@@ -238,6 +200,75 @@ fn incoming_message(event: GoogleChatEvent) -> Option<GoogleChatIncomingMessage>
         prompt,
         mode,
     })
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn space_name(
+    event: &GoogleChatEvent,
+    message: &super::types::GoogleChatMessage,
+) -> Option<String> {
+    non_empty(
+        message
+            .space
+            .as_ref()
+            .and_then(|space| space.name.as_deref())
+            .or_else(|| event.space.as_ref().and_then(|space| space.name.as_deref())),
+    )
+}
+
+fn thread_name(message: &super::types::GoogleChatMessage) -> Option<String> {
+    non_empty(message.thread.as_ref()?.name.as_deref())
+}
+
+fn message_mode(
+    event: &GoogleChatEvent,
+    message: &super::types::GoogleChatMessage,
+) -> GoogleChatMessageMode {
+    let space_type = message
+        .space
+        .as_ref()
+        .and_then(|space| space.space_type.as_deref())
+        .or_else(|| {
+            event
+                .space
+                .as_ref()
+                .and_then(|space| space.space_type.as_deref())
+        });
+    if space_type == Some("DM") {
+        return GoogleChatMessageMode::DirectMessage;
+    }
+    if has_user_mention(message) {
+        return GoogleChatMessageMode::ChannelMention;
+    }
+    GoogleChatMessageMode::ChannelMessage
+}
+
+fn has_user_mention(message: &super::types::GoogleChatMessage) -> bool {
+    message
+        .annotations
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|annotation| annotation.annotation_type.as_deref() == Some("USER_MENTION"))
+}
+
+fn conversation_key(
+    mode: &GoogleChatMessageMode,
+    space_name: &str,
+    thread_name: Option<&str>,
+) -> String {
+    match mode {
+        GoogleChatMessageMode::DirectMessage => space_name.to_owned(),
+        GoogleChatMessageMode::ChannelMention | GoogleChatMessageMode::ChannelMessage => {
+            thread_name.unwrap_or(space_name).to_owned()
+        }
+    }
 }
 
 fn clean_prompt(text: &str) -> String {
@@ -250,10 +281,6 @@ fn clean_prompt(text: &str) -> String {
         "" => "Proceed with your task.".to_owned(),
         value => value.to_owned(),
     }
-}
-
-fn event_key(message: &GoogleChatIncomingMessage) -> String {
-    message.message_name.clone()
 }
 
 fn agent_runtime(agent: &ManagedAgentRow) -> String {

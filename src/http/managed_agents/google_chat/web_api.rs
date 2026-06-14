@@ -29,7 +29,7 @@ struct MessageResponse {
     name: Option<String>,
 }
 
-fn truncate(text: &str) -> String {
+pub(crate) fn truncate(text: &str) -> String {
     text.chars().take(MAX_TEXT_CHARS).collect()
 }
 
@@ -69,9 +69,8 @@ pub(crate) async fn access_token(
         exp: now + 3600,
     };
 
-    let encoding_key =
-        jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes())
-            .map_err(|_| GatewayError::Unauthorized)?;
+    let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(private_key.as_bytes())
+        .map_err(|_| GatewayError::Unauthorized)?;
 
     let jwt = jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
@@ -166,4 +165,35 @@ pub(crate) async fn update_message(
         .map_err(GatewayError::Upstream)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate, MAX_TEXT_CHARS};
+
+    #[test]
+    fn truncate_uses_character_boundaries() {
+        let text = format!("{}tail", "🙂".repeat(MAX_TEXT_CHARS + 1));
+        let truncated = truncate(&text);
+
+        assert_eq!(truncated.chars().count(), MAX_TEXT_CHARS);
+        assert!(truncated.is_char_boundary(truncated.len()));
+    }
+
+    #[test]
+    fn truncate_preserves_exact_multibyte_limit() {
+        let text = format!("{}€", "a".repeat(MAX_TEXT_CHARS - 1));
+
+        assert_eq!(truncate(&text), text);
+    }
+
+    #[test]
+    fn truncate_drops_trailing_text_after_multibyte_limit() {
+        let text = format!("{}€z", "a".repeat(MAX_TEXT_CHARS - 1));
+        let truncated = truncate(&text);
+
+        assert_eq!(truncated.chars().count(), MAX_TEXT_CHARS);
+        assert!(truncated.ends_with('€'));
+        assert!(!truncated.ends_with('z'));
+    }
 }

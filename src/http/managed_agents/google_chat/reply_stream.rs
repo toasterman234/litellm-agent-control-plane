@@ -243,21 +243,16 @@ impl<'a> GoogleChatReply<'a> {
         if text.is_empty() {
             return Ok(());
         }
-        // Truncate to Google Chat's max character limit
-        let text = if text.len() > web_api::MAX_TEXT_CHARS {
-            &text[..web_api::MAX_TEXT_CHARS]
-        } else {
-            text
-        };
+        let text = web_api::truncate(text);
         if let Some(message_name) = self.reply_message_name.as_deref() {
-            web_api::update_message(self.client, self.token, message_name, text).await
+            web_api::update_message(self.client, self.token, message_name, &text).await
         } else {
             let name = web_api::create_message(
                 self.client,
                 self.token,
                 &self.message.space_name,
                 self.message.thread_name.as_deref(),
-                text,
+                &text,
             )
             .await?;
             self.reply_message_name = Some(name);

@@ -40,8 +40,6 @@ pub(crate) struct GoogleChatUser {
     pub name: Option<String>,
     #[serde(rename = "type")]
     pub user_type: Option<String>,
-    #[serde(rename = "displayName")]
-    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -60,6 +58,16 @@ pub(crate) enum GoogleChatMessageMode {
     DirectMessage,
     ChannelMention,
     ChannelMessage,
+}
+
+impl GoogleChatMessageMode {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::ChannelMention => "channel_mention",
+            Self::ChannelMessage => "channel_message",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

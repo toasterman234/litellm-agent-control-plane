@@ -24,7 +24,9 @@ pub(crate) async fn load_agent(
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))
 }
 
-pub(crate) fn google_chat_config(agent: &ManagedAgentRow) -> Result<GoogleChatAgentConfig, GatewayError> {
+pub(crate) fn google_chat_config(
+    agent: &ManagedAgentRow,
+) -> Result<GoogleChatAgentConfig, GatewayError> {
     serde_json::from_value(
         agent
             .config
