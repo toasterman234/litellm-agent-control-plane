@@ -1,3 +1,4 @@
+mod config;
 mod flow_state;
 mod token;
 
@@ -17,11 +18,9 @@ use crate::{
     proxy::{auth::master_key::require_any_gateway_key, credential_crypto, state::AppState},
 };
 
+use config::{oauth_client_value, oauth_resource, oauth_scopes, required, required_server_url};
 use flow_state::{redirect_target, safe_redirect_after, SignedOAuthState};
-use token::{
-    credential_from_token, exchange_code, oauth_client_value, oauth_resource, oauth_scopes,
-    required, required_server_url, store_oauth_credential,
-};
+use token::{credential_from_token, exchange_code, store_oauth_credential};
 
 pub(in crate::http::mcp_registry) use token::resolve_oauth_bearer_token;
 
