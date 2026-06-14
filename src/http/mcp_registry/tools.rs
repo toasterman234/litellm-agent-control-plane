@@ -182,30 +182,37 @@ async fn apply_user_credential(
     let cred: Option<String> =
         match super::oauth::resolve_oauth_bearer_token(state, pool, server, user_id, key).await? {
             Some(value) => Some(value),
-            None => credentials::get_personal_by_name(pool, &cred_name, user_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|r| {
-                    r.credential_values
+            None => {
+                let user_credential = if let Some(row) =
+                    credentials::get_personal_by_name(pool, &cred_name, user_id).await?
+                {
+                    let encrypted = row
+                        .credential_values
                         .get("value")
-                        .and_then(|v| v.as_str())
-                        .and_then(dec)
-                })
-                .or_else(|| {
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty());
+                    match encrypted {
+                        Some(encrypted) => Some(credential_crypto::decrypt_value(encrypted, key)?),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                user_credential.or_else(|| {
                     server
                         .credentials
                         .get("value")
                         .and_then(|v| v.as_str())
                         .and_then(dec)
+                        .or_else(|| {
+                            server
+                                .credentials
+                                .get("api_key")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_owned)
+                        })
                 })
-                .or_else(|| {
-                    server
-                        .credentials
-                        .get("api_key")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned)
-                }),
+            }
         };
     if let Some(cred) = cred {
         req = match server.auth_type.as_deref().unwrap_or("bearer_token") {

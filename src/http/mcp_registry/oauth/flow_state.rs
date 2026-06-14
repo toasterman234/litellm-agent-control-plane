@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::http::HeaderMap;
+use axum::http::{header::COOKIE, HeaderMap};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hmac::{Hmac, Mac};
 use reqwest::Url;
@@ -12,6 +12,8 @@ use crate::errors::GatewayError;
 type HmacSha256 = Hmac<Sha256>;
 
 const STATE_TTL_MS: i64 = 10 * 60 * 1000;
+const STATE_TTL_MS_SECONDS: i64 = STATE_TTL_MS / 1000;
+const CALLBACK_COOKIE: &str = "lap_mcp_oauth_state";
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(super) struct SignedOAuthState {
@@ -97,6 +99,34 @@ pub(super) fn redirect_target(
     format!("{redirect_after}{separator}{query}")
 }
 
+pub(super) fn callback_cookie(state_value: &str, redirect_uri: &str) -> String {
+    let secure = Url::parse(redirect_uri)
+        .ok()
+        .is_some_and(|url| url.scheme() == "https");
+    format!(
+        "{CALLBACK_COOKIE}={state_value}; Path=/v1/mcp/oauth; HttpOnly; SameSite=Lax; Max-Age={STATE_TTL_MS_SECONDS}{}",
+        if secure { "; Secure" } else { "" }
+    )
+}
+
+pub(super) fn clear_callback_cookie() -> &'static str {
+    "lap_mcp_oauth_state=; Path=/v1/mcp/oauth; HttpOnly; SameSite=Lax; Max-Age=0"
+}
+
+pub(super) fn callback_cookie_matches(headers: &HeaderMap, state_value: &str) -> bool {
+    headers.get_all(COOKIE).iter().any(|value| {
+        let Ok(value) = value.to_str() else {
+            return false;
+        };
+        value.split(';').any(|part| {
+            let Some((name, value)) = part.trim().split_once('=') else {
+                return false;
+            };
+            name == CALLBACK_COOKIE && value == state_value
+        })
+    })
+}
+
 pub(super) fn safe_redirect_after(value: Option<&str>) -> String {
     value
         .map(str::trim)
@@ -160,5 +190,16 @@ fn query_escape(value: &str) -> String {
 }
 
 fn forwarded_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers.get(name).and_then(|value| value.to_str().ok())
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(first_forwarded_value)
+}
+
+fn first_forwarded_value(value: &str) -> Option<&str> {
+    value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }

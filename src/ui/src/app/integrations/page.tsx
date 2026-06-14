@@ -71,10 +71,12 @@ export default function IntegrationsPage() {
     const params = new URLSearchParams(window.location.search);
     const status = params.get("mcp_oauth");
     if (!status) return;
+    const serverLabel =
+      params.get("server_id")?.replace(/[-_]+/g, " ").trim() || "Integration";
     if (status === "connected") {
-      toast.success("Gmail connected");
+      toast.success(`${serverLabel} connected`);
     } else if (status === "failed") {
-      toast.error(params.get("error") ?? "Gmail connection failed");
+      toast.error(params.get("error") ?? `${serverLabel} connection failed`);
     }
     params.delete("mcp_oauth");
     params.delete("server_id");

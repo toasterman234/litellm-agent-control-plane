@@ -62,9 +62,3 @@ pub(super) fn required_server_url<'a>(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| GatewayError::InvalidConfig(message.to_owned()))
 }
-
-pub(super) fn required<'a>(value: Option<&'a str>, message: &str) -> Result<&'a str, GatewayError> {
-    value
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| GatewayError::InvalidJsonMessage(message.to_owned()))
-}

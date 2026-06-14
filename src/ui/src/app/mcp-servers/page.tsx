@@ -191,6 +191,7 @@ const GMAIL_TEMPLATE_STEPS: {
       "Set auth_type to oauth2 with Google's auth and token URLs.",
       "Store oauth_client_id and oauth_client_secret in the server credentials.",
       "Store the Gmail MCP resource value in mcp_info.oauth.resource so OAuth requests include the protected resource.",
+      "Store mcp_info.oauth.scopes with Gmail readonly and compose so LAP can start the OAuth flow.",
       "Expose only read and draft tools: search_threads, get_thread, create_draft, list_drafts, list_labels.",
     ],
     code:
@@ -199,7 +200,8 @@ transport=streamable_http
 auth_type=oauth2
 authorization_url=https://accounts.google.com/o/oauth2/v2/auth
 token_url=https://oauth2.googleapis.com/token
-mcp_info.oauth.resource=${GMAIL_TEMPLATE_RESOURCE}`,
+mcp_info.oauth.resource=${GMAIL_TEMPLATE_RESOURCE}
+${GMAIL_TEMPLATE_SCOPES.map((scope) => `mcp_info.oauth.scopes[]=${scope}`).join("\n")}`,
   },
   {
     title: "Verification",
@@ -452,7 +454,7 @@ export default function McpServersPage() {
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <div className="flex items-center gap-2">
             <Server className="size-4 text-muted-foreground" />
-            <h1 className="text-sm font-semibold">MCP Servers</h1>
+            <h1 className="text-sm font-semibold tracking-tight">MCP Servers</h1>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={onAddServer}>
@@ -729,7 +731,7 @@ function McpTemplatesPanel({ onOpenGmail }: { onOpenGmail: () => void }) {
   return (
     <section className="space-y-3">
       <div className="flex flex-col gap-1">
-        <h2 className="text-base font-semibold">Templates</h2>
+        <h2 className="text-base font-semibold tracking-tight">Templates</h2>
         <p className="text-sm text-muted-foreground">
           Start from known MCP integrations that need setup before users can connect them.
         </p>
@@ -751,7 +753,7 @@ function McpTemplatesPanel({ onOpenGmail }: { onOpenGmail: () => void }) {
           </div>
           <div className="mt-5">
             <div className="flex items-center gap-2">
-              <h3 className="text-base font-semibold">Gmail</h3>
+              <h3 className="text-base font-semibold tracking-tight">Gmail</h3>
               <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 OAuth
               </span>
@@ -856,7 +858,7 @@ function GmailTemplateDialog({
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                   Step {step + 1} of {GMAIL_TEMPLATE_STEPS.length}
                 </div>
-                <h3 className="mt-1 text-lg font-semibold">{current.title}</h3>
+                <h3 className="mt-1 text-lg font-semibold tracking-tight">{current.title}</h3>
               </div>
               <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/40">
                 <Icon className="size-4 text-muted-foreground" />

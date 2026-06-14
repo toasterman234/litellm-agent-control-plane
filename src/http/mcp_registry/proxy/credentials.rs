@@ -88,7 +88,15 @@ async fn resolve_user_credential(
     let Some(row) = credentials::get_personal_by_name(pool, &key_name, user_id).await? else {
         return Ok(None);
     };
-    Ok(decrypt_row_value(&row.credential_values, enc_key))
+    let encrypted = row
+        .credential_values
+        .get("value")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let Some(encrypted) = encrypted else {
+        return Ok(None);
+    };
+    credential_crypto::decrypt_value(encrypted, enc_key).map(Some)
 }
 
 fn resolve_server_credential(credentials: &Value, enc_key: &str) -> Option<String> {

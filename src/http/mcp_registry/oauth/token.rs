@@ -40,21 +40,50 @@ pub(in crate::http::mcp_registry) async fn resolve_oauth_bearer_token(
     user_id: &str,
     enc_key: &str,
 ) -> Result<Option<String>, GatewayError> {
+    let lock_key = format!("mcp_oauth_refresh:{}:{user_id}", server.server_id);
+    let _guard = state.keyed_locks.lock(&lock_key).await;
+    resolve_oauth_bearer_token_locked(state, pool, server, user_id, enc_key).await
+}
+
+async fn resolve_oauth_bearer_token_locked(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    server: &McpServerRow,
+    user_id: &str,
+    enc_key: &str,
+) -> Result<Option<String>, GatewayError> {
     let Some(raw) = read_user_credential(pool, &server.server_id, user_id, enc_key).await? else {
         return Ok(None);
     };
     let Ok(mut credential) = serde_json::from_str::<StoredOAuthCredential>(&raw) else {
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return Err(GatewayError::InvalidConfig(
+                "Stored MCP OAuth credential is invalid; reconnect the integration".to_owned(),
+            ));
+        }
         return Ok(Some(raw));
     };
     if token_is_fresh(credential.expires_at_ms) {
         return Ok(Some(credential.access_token));
     }
 
+    let expiry_missing = credential.expires_at_ms.is_none();
     let Some(refresh_token) = credential.refresh_token.clone() else {
-        return Ok(Some(credential.access_token));
+        if expiry_missing {
+            return Ok(Some(credential.access_token));
+        }
+        return Err(GatewayError::InvalidConfig(
+            "MCP OAuth token expired; reconnect the integration".to_owned(),
+        ));
     };
     let Some(context) = refresh_context(server, enc_key) else {
-        return Ok(Some(credential.access_token));
+        if expiry_missing {
+            return Ok(Some(credential.access_token));
+        }
+        return Err(GatewayError::InvalidConfig(
+            "MCP OAuth refresh is not configured".to_owned(),
+        ));
     };
     let token = refresh_access_token(
         state,
@@ -238,5 +267,20 @@ async fn read_user_credential(
 }
 
 fn token_is_fresh(expires_at_ms: Option<i64>) -> bool {
-    expires_at_ms.is_none_or(|expires_at| expires_at > now_ms() + REFRESH_SKEW_MS)
+    expires_at_ms.is_some_and(|expires_at| expires_at > now_ms() + REFRESH_SKEW_MS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_expiry_is_not_treated_as_fresh() {
+        assert!(!token_is_fresh(None));
+    }
+
+    #[test]
+    fn future_expiry_is_fresh() {
+        assert!(token_is_fresh(Some(now_ms() + REFRESH_SKEW_MS + 1)));
+    }
 }

@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::HeaderMap,
-    response::Redirect,
+    http::{header::SET_COOKIE, HeaderMap, HeaderValue},
+    response::{IntoResponse, Redirect, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use crate::{
     proxy::{auth::master_key::require_any_gateway_key, credential_crypto, state::AppState},
 };
 
-use config::{oauth_client_value, oauth_resource, oauth_scopes, required, required_server_url};
+use config::{oauth_client_value, oauth_resource, oauth_scopes, required_server_url};
 use flow_state::{redirect_target, safe_redirect_after, SignedOAuthState};
 use token::{credential_from_token, exchange_code, store_oauth_credential};
 
@@ -48,7 +48,7 @@ pub async fn start_oauth(
     headers: HeaderMap,
     Path(server_id): Path<String>,
     Json(input): Json<StartOAuthRequest>,
-) -> Result<Json<StartOAuthResponse>, GatewayError> {
+) -> Result<Response, GatewayError> {
     require_any_gateway_key(&headers, &state)?;
 
     let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
@@ -76,65 +76,186 @@ pub async fn start_oauth(
         nonce: uuid::Uuid::new_v4().simple().to_string(),
         iat_ms: flow_state::now_ms(),
     };
+    let encoded_state = flow_state::encode_state(&signed_state, &enc_key)?;
     let authorization_url = flow_state::authorization_url(
         authorization_url,
         &client_id,
         &redirect_uri,
         &scopes,
         resource.as_deref(),
-        &flow_state::encode_state(&signed_state, &enc_key)?,
+        &encoded_state,
     )?;
 
-    Ok(Json(StartOAuthResponse {
+    let mut response = Json(StartOAuthResponse {
         authorization_url,
         redirect_uri,
-    }))
+    })
+    .into_response();
+    insert_set_cookie(
+        &mut response,
+        flow_state::callback_cookie(&encoded_state, &signed_state.redirect_uri),
+    )?;
+    Ok(response)
 }
 
 pub async fn oauth_callback(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<OAuthCallbackQuery>,
-) -> Result<Redirect, GatewayError> {
-    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
-    let enc_key =
-        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref())?;
-    let signed_state = flow_state::decode_state(
-        required(query.state.as_deref(), "missing OAuth state")?,
-        &enc_key,
-    )?;
-    let redirect_after = safe_redirect_after(signed_state.redirect_after.as_deref());
+) -> Result<Response, GatewayError> {
+    let context = match callback_context(&state, &headers, &query) {
+        Ok(value) => value,
+        Err(redirect) => return Ok(redirect.response()),
+    };
 
     if let Some(error) = query.error {
         let message = query.error_description.unwrap_or(error);
-        return Ok(Redirect::to(&redirect_target(
-            &redirect_after,
+        return Ok(callback_redirect(
+            &context.redirect_after,
             "failed",
-            &signed_state.server_id,
+            &context.signed_state.server_id,
             Some(&message),
-        )));
+        ));
     }
 
-    let code = required(query.code.as_deref(), "missing OAuth code")?;
-    let server = repository::get(pool, &signed_state.server_id)
+    let Some(code) = query.code.as_deref() else {
+        return Ok(callback_redirect(
+            &context.redirect_after,
+            "failed",
+            &context.signed_state.server_id,
+            Some("Missing OAuth code"),
+        ));
+    };
+
+    let result = complete_oauth_callback(&state, &context, code).await;
+    Ok(match result {
+        Ok(()) => callback_redirect(
+            &context.redirect_after,
+            "connected",
+            &context.signed_state.server_id,
+            None,
+        ),
+        Err(error) => callback_redirect(
+            &context.redirect_after,
+            "failed",
+            &context.signed_state.server_id,
+            Some(&error.to_string()),
+        ),
+    })
+}
+
+struct OAuthCallbackContext {
+    enc_key: String,
+    signed_state: SignedOAuthState,
+    redirect_after: String,
+}
+
+fn callback_context(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: &OAuthCallbackQuery,
+) -> Result<OAuthCallbackContext, CallbackRedirect> {
+    let enc_key =
+        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref())
+            .map_err(|_| CallbackRedirect::fallback("unknown", "OAuth is not configured"))?;
+    let state_value = query
+        .state
+        .as_deref()
+        .ok_or_else(|| CallbackRedirect::fallback("unknown", "Missing OAuth state"))?;
+    let signed_state = flow_state::decode_state(state_value, &enc_key)
+        .map_err(|_| CallbackRedirect::fallback("unknown", "Invalid OAuth state"))?;
+    let redirect_after = safe_redirect_after(signed_state.redirect_after.as_deref());
+    if !flow_state::callback_cookie_matches(headers, state_value) {
+        return Err(CallbackRedirect {
+            redirect_after,
+            server_id: signed_state.server_id,
+            error: "OAuth session expired. Try connecting again.",
+        });
+    }
+    Ok(OAuthCallbackContext {
+        enc_key,
+        signed_state,
+        redirect_after,
+    })
+}
+
+struct CallbackRedirect {
+    redirect_after: String,
+    server_id: String,
+    error: &'static str,
+}
+
+impl CallbackRedirect {
+    fn fallback(server_id: &str, error: &'static str) -> Self {
+        Self {
+            redirect_after: "/integrations".to_owned(),
+            server_id: server_id.to_owned(),
+            error,
+        }
+    }
+
+    fn response(self) -> Response {
+        callback_redirect(
+            &self.redirect_after,
+            "failed",
+            &self.server_id,
+            Some(self.error),
+        )
+    }
+}
+
+async fn complete_oauth_callback(
+    state: &AppState,
+    context: &OAuthCallbackContext,
+    code: &str,
+) -> Result<(), GatewayError> {
+    let pool = state.db.as_ref().ok_or(GatewayError::MissingDatabase)?;
+    let server = repository::get(pool, &context.signed_state.server_id)
         .await?
         .ok_or_else(|| {
-            GatewayError::NotFound(format!("MCP server not found: {}", signed_state.server_id))
+            GatewayError::NotFound(format!(
+                "MCP server not found: {}",
+                context.signed_state.server_id
+            ))
         })?;
-    let token = exchange_code(&state, &server, &enc_key, code, &signed_state.redirect_uri).await?;
+    let token = exchange_code(
+        state,
+        &server,
+        &context.enc_key,
+        code,
+        &context.signed_state.redirect_uri,
+    )
+    .await?;
     let credential = credential_from_token(token, None)?;
     store_oauth_credential(
         pool,
-        &state,
-        &signed_state.server_id,
-        &signed_state.user_id,
+        state,
+        &context.signed_state.server_id,
+        &context.signed_state.user_id,
         &credential,
     )
-    .await?;
+    .await
+}
 
-    Ok(Redirect::to(&redirect_target(
-        &redirect_after,
-        "connected",
-        &signed_state.server_id,
-        None,
-    )))
+fn callback_redirect(
+    redirect_after: &str,
+    status: &str,
+    server_id: &str,
+    error: Option<&str>,
+) -> Response {
+    let target = redirect_target(redirect_after, status, server_id, error);
+    let mut response = Redirect::to(&target).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_static(flow_state::clear_callback_cookie()),
+    );
+    response
+}
+
+fn insert_set_cookie(response: &mut Response, value: String) -> Result<(), GatewayError> {
+    let value = HeaderValue::from_str(&value).map_err(|_| {
+        GatewayError::InvalidConfig("OAuth callback cookie value is invalid".to_owned())
+    })?;
+    response.headers_mut().insert(SET_COOKIE, value);
+    Ok(())
 }
