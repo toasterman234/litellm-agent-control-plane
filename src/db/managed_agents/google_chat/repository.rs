@@ -79,3 +79,24 @@ pub async fn record_event(
     .map_err(GatewayError::Database)?;
     Ok(result.rows_affected() == 1)
 }
+
+pub async fn event_recorded(
+    pool: &PgPool,
+    agent_id: &str,
+    event_id: &str,
+) -> Result<bool, GatewayError> {
+    sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+          SELECT 1
+          FROM "LiteLLM_ManagedAgentGoogleChatEventsTable"
+          WHERE agent_id = $1 AND event_id = $2
+        )
+        "#,
+    )
+    .bind(agent_id)
+    .bind(event_id)
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)
+}

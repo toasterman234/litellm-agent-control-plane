@@ -66,9 +66,6 @@ pub(crate) async fn events(
     let Some(session_id) = ensure_session(state.clone(), &pool, &agent, &message).await? else {
         return Ok(StatusCode::OK);
     };
-    if !google_chat::repository::record_event(&pool, &agent.id, &message.message_name).await? {
-        return Ok(StatusCode::OK);
-    }
     spawn_google_chat_prompt(state, pool, agent, config, message, session_id);
     Ok(StatusCode::ACCEPTED)
 }

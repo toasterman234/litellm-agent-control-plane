@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use tracing::warn;
 
 use crate::{
-    db::managed_agents::registry::schema::ManagedAgentRow,
+    db::managed_agents::{google_chat, registry::schema::ManagedAgentRow},
     errors::GatewayError,
     http::sessions::{enqueue_prompt_text, runtime_event_stream_for_session},
     proxy::state::AppState,
@@ -47,6 +47,9 @@ async fn run_google_chat_prompt(
     let service_account_json = load_service_account_json(&state, &agent.id, &config).await?;
     let token = web_api::access_token(&state.http, &service_account_json).await?;
     let _lock = GoogleChatPromptLock::acquire(&state.keyed_locks, &session_id).await;
+    if google_chat::repository::event_recorded(&pool, &agent.id, &message.message_name).await? {
+        return Ok(());
+    }
     let baseline_seq = last_message_seq(&pool, &session_id).await?;
     let runtime_stream = runtime_event_stream_for_session(&state, &pool, &session_id)
         .await
@@ -71,6 +74,7 @@ async fn run_google_chat_prompt(
         &agent,
     )
     .await?;
+    google_chat::repository::record_event(&pool, &agent.id, &message.message_name).await?;
     if let Some(stream) = runtime_stream {
         reply.run_runtime(stream).await
     } else {
