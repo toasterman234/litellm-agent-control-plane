@@ -14,6 +14,8 @@ base64 = "0.22"
 crypto_secretbox = { version = "0.1", features = ["std"] }
 dotenvy = "0.15"
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 async-stream = "0.3"

@@ -33,6 +33,19 @@ pub async fn list(pool: &PgPool, agent_id: Option<&str>) -> Result<Vec<RoutineRo
     Ok(rows)
 }
 
+pub async fn list_active(pool: &PgPool) -> Result<Vec<RoutineRow>, GatewayError> {
+    sqlx::query_as::<_, RoutineRow>(
+        r#"
+        SELECT * FROM "LiteLLM_ManagedAgentRoutinesTable"
+        WHERE status = 'active'
+        ORDER BY created_at ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
 pub async fn get(pool: &PgPool, routine_id: &str) -> Result<Option<RoutineRow>, GatewayError> {
     sqlx::query_as::<_, RoutineRow>(
         r#"SELECT * FROM "LiteLLM_ManagedAgentRoutinesTable" WHERE id = $1"#,
