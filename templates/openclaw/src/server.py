@@ -228,9 +228,9 @@ def read_openclaw_config(path: Path) -> dict[str, Any]:
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError as exc:
-        raise ValueError(f"OpenClaw config is not valid JSON: {path}") from exc
+        raise RuntimeError(f"OpenClaw config is not valid JSON: {path}") from exc
     if not isinstance(value, dict):
-        raise ValueError("OpenClaw config must be a JSON object")
+        raise RuntimeError("OpenClaw config must be a JSON object")
     return value
 
 
@@ -316,10 +316,32 @@ def openclaw_mcp_server(server: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return name, result
 
 
-def agent_mcp_servers() -> dict[str, dict[str, Any]]:
+def agent_source_key(row: sqlite3.Row) -> str:
+    metadata = parse_json(row["metadata"], {})
+    if isinstance(metadata, dict):
+        local_agent_id = metadata.get("local_agent_id")
+        if isinstance(local_agent_id, str) and local_agent_id.strip():
+            return f"lap:{local_agent_id.strip()}"
+    return f"provider:{row['id']}"
+
+
+def latest_agent_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    rows = conn.execute(
+        "SELECT id, mcp_servers, metadata, created_at FROM agents ORDER BY created_at ASC, id ASC"
+    ).fetchall()
+    latest: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        latest[agent_source_key(row)] = row
+    return list(latest.values())
+
+
+def agent_mcp_servers(conn: sqlite3.Connection | None = None) -> dict[str, dict[str, Any]]:
     desired: dict[str, dict[str, Any]] = {}
-    with db() as conn:
-        rows = conn.execute("SELECT id, mcp_servers FROM agents ORDER BY created_at ASC").fetchall()
+    if conn is None:
+        with db() as owned_conn:
+            rows = latest_agent_rows(owned_conn)
+    else:
+        rows = latest_agent_rows(conn)
     for row in rows:
         servers = parse_json(row["mcp_servers"], [])
         if not isinstance(servers, list):
@@ -349,6 +371,13 @@ def validate_mcp_servers_input(mcp_servers: list[dict[str, Any]] | None) -> None
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def sync_openclaw_mcp_config_or_400(conn: sqlite3.Connection) -> None:
+    try:
+        sync_openclaw_mcp_config(conn)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def ensure_mcp_tool_policy(config: dict[str, Any], has_mcp_servers: bool) -> None:
     if not has_mcp_servers:
         return
@@ -366,17 +395,17 @@ def ensure_mcp_tool_policy(config: dict[str, Any], has_mcp_servers: bool) -> Non
         also_allow.append("bundle-mcp")
 
 
-def sync_openclaw_mcp_config() -> None:
+def sync_openclaw_mcp_config(conn: sqlite3.Connection | None = None) -> None:
     with config_lock:
-        desired = agent_mcp_servers()
+        desired = agent_mcp_servers(conn)
         config_path = openclaw_config_path()
         config = read_openclaw_config(config_path)
         mcp = config.setdefault("mcp", {})
         if not isinstance(mcp, dict):
-            raise ValueError("OpenClaw config mcp must be an object")
+            raise RuntimeError("OpenClaw config mcp must be an object")
         servers = mcp.setdefault("servers", {})
         if not isinstance(servers, dict):
-            raise ValueError("OpenClaw config mcp.servers must be an object")
+            raise RuntimeError("OpenClaw config mcp.servers must be an object")
 
         managed_path = managed_mcp_path()
         previous = read_json_file(managed_path, [])
@@ -851,7 +880,7 @@ def create_agent(input: CreateAgentRequest) -> dict[str, Any]:
             ),
         )
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-    sync_openclaw_mcp_config()
+        sync_openclaw_mcp_config_or_400(conn)
     return row_to_agent(row)
 
 
@@ -904,7 +933,7 @@ def update_agent(agent_id: str, input: CreateAgentRequest) -> dict[str, Any]:
             ),
         )
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-    sync_openclaw_mcp_config()
+        sync_openclaw_mcp_config_or_400(conn)
     return row_to_agent(row)
 
 
