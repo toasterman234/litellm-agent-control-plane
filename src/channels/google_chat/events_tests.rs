@@ -132,22 +132,25 @@ fn incoming_message_space_mention_uses_thread_as_conversation_key() {
 
 #[test]
 fn incoming_message_uses_event_thread_when_message_thread_is_missing() {
-    let result = incoming_message(event(json!({
-        "type": "MESSAGE",
-        "user": { "name": "users/human-1", "type": "HUMAN" },
-        "message": {
-            "name": "spaces/ROOM/messages/msg-1",
-            "text": "@Bot do the thing",
+    let result = incoming_message_for_app(
+        event(json!({
+            "type": "MESSAGE",
+            "user": { "name": "users/human-1", "type": "HUMAN" },
+            "message": {
+                "name": "spaces/ROOM/messages/msg-1",
+                "text": "@Bot do the thing",
+                "space": { "name": "spaces/ROOM", "spaceType": "SPACE" },
+                "annotations": [
+                    { "type": "USER_MENTION", "userMention": { "user": {
+                        "name": "users/app", "displayName": "DifferentName", "type": "BOT"
+                    }}}
+                ]
+            },
             "space": { "name": "spaces/ROOM", "spaceType": "SPACE" },
-            "annotations": [
-                { "type": "USER_MENTION", "userMention": { "user": {
-                    "name": "users/app", "displayName": "YourAgent", "type": "BOT"
-                }}}
-            ]
-        },
-        "space": { "name": "spaces/ROOM", "spaceType": "SPACE" },
-        "thread": { "name": "spaces/ROOM/threads/thread-root" }
-    })))
+            "thread": { "name": "spaces/ROOM/threads/thread-root" }
+        })),
+        Some("YourAgent"),
+    )
     .unwrap();
 
     assert_eq!(result.mode, GoogleChatMessageMode::ChannelMention);

@@ -38,8 +38,6 @@ pub(crate) struct GoogleChatSpace {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct GoogleChatUser {
     pub name: Option<String>,
-    #[serde(rename = "displayName")]
-    pub display_name: Option<String>,
     #[serde(rename = "type")]
     pub user_type: Option<String>,
 }
