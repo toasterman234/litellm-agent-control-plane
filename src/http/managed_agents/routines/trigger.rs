@@ -40,7 +40,7 @@ pub(crate) async fn trigger_routine_run(
     routine_id: &str,
     host: &str,
 ) -> Result<RunCreateResponse, GatewayError> {
-    let routine = routines::repository::get(&pool, &routine_id)
+    let routine = routines::repository::get(&pool, routine_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("routine not found".to_owned()))?;
     let agent = registry::repository::get(&pool, &routine.agent_id)
@@ -48,7 +48,7 @@ pub(crate) async fn trigger_routine_run(
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
     let prompt = routine_prompt(&routine, &agent);
     let run = create_run(&pool, &routine, &agent, &prompt).await?;
-    routines::repository::mark_triggered(&pool, &routine_id, &run.id).await?;
+    routines::repository::mark_triggered(&pool, routine_id, &run.id).await?;
     state.agent_runs.track_run(&routine.agent_id, &run.id);
     spawn_managed_agent_run(
         state.clone(),

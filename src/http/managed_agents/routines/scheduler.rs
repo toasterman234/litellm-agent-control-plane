@@ -92,7 +92,7 @@ fn latest_scheduled_at(cron: &str, timezone: &str, threshold: i64, now: i64) -> 
         if schedule.matches(&cursor.with_timezone(&tz)) {
             return Some(cursor.timestamp_millis());
         }
-        cursor = cursor - chrono::Duration::minutes(1);
+        cursor -= chrono::Duration::minutes(1);
     }
     None
 }
