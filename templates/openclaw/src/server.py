@@ -214,10 +214,6 @@ def parse_json(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
-def config_signature(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
 def openclaw_config_path() -> Path:
     return Path(OPENCLAW_CONFIG_PATH)
 
@@ -344,9 +340,8 @@ def agent_mcp_servers(row: sqlite3.Row) -> dict[str, dict[str, Any]]:
         if not isinstance(server, dict):
             raise ValueError(f"agent {row['id']} has invalid mcp server entry")
         name, config = openclaw_mcp_server(server)
-        existing = desired.get(name)
-        if existing is not None and config_signature(existing) != config_signature(config):
-            raise ValueError(f"conflicting MCP server config for {name}")
+        if name in desired:
+            raise ValueError(f"duplicate MCP server name {name}")
         desired[name] = config
     return desired
 
@@ -356,13 +351,17 @@ def validate_mcp_servers_input(mcp_servers: list[dict[str, Any]] | None) -> None
         return
     if not isinstance(mcp_servers, list):
         raise HTTPException(status_code=400, detail="mcp_servers must be a list")
+    names: set[str] = set()
     for server in mcp_servers:
         if not isinstance(server, dict):
             raise HTTPException(status_code=400, detail="mcp_servers entries must be objects")
         try:
-            openclaw_mcp_server(server)
+            name, _ = openclaw_mcp_server(server)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if name in names:
+            raise HTTPException(status_code=400, detail=f"duplicate MCP server name {name}")
+        names.add(name)
 
 
 def ensure_mcp_tool_policy(config: dict[str, Any], has_mcp_servers: bool) -> None:
@@ -401,9 +400,7 @@ def sync_openclaw_mcp_config(agent_row: sqlite3.Row) -> None:
         for name, server_config in desired.items():
             existing = servers.get(name)
             if name not in previous_names and existing is not None:
-                if config_signature(existing) != config_signature(server_config):
-                    raise ValueError(f"mcp server {name} conflicts with existing OpenClaw config")
-                continue
+                raise ValueError(f"mcp server {name} conflicts with existing OpenClaw config")
             servers[name] = server_config
             managed_names.add(name)
         store_managed_mcp_names(config, managed_names)
