@@ -25,7 +25,6 @@ import {
 import { defaultModelForRuntime, runtimeSupportsModelDiscovery, selectedRuntimeModel } from "@/lib/model-options";
 import { runtimeBrandIconId } from "@/lib/runtime-branding";
 import type { Agent, AgentRuntimeId, RuntimeHarness, BuiltinRuntimeId } from "@/lib/types";
-import { resolveApiSpec } from "@/lib/types";
 
 const NEW_AGENT_VALUE = "__new_agent__";
 const CLAUDE_RUNTIME: AgentRuntimeId = "claude_managed_agents";
@@ -45,6 +44,22 @@ function runtimeSubtitle(harness: RuntimeHarness): string {
   if (harness.api_spec === "cursor") return "Background repo agents";
   if (harness.api_spec === "gemini_antigravity") return "Google managed agent sandbox";
   return "Managed runtime sessions";
+}
+
+function connectedRuntimeHarnesses(harnesses: RuntimeHarness[]): RuntimeHarness[] {
+  return harnesses.filter((item) => item.connected);
+}
+
+function defaultRuntimeAlias(harnesses: RuntimeHarness[]): AgentRuntimeId | "" {
+  return harnesses.find((item) => item.alias === CLAUDE_RUNTIME)?.alias ?? harnesses[0]?.alias ?? "";
+}
+
+function selectableRuntimeAlias(
+  runtime: AgentRuntimeId | "",
+  harnesses: RuntimeHarness[],
+): AgentRuntimeId | "" {
+  if (runtime && harnesses.some((item) => item.alias === runtime)) return runtime;
+  return defaultRuntimeAlias(harnesses);
 }
 
 function isAgentRuntimeId(value: unknown): value is AgentRuntimeId {
@@ -98,10 +113,10 @@ function SessionsStart() {
   useEffect(() => {
     Promise.all([listRuntimeHarnesses(), listSessions(), listAgents()])
       .then(([nextHarnesses, nextSessions, nextAgents]) => {
+        const nextRuntimeOptions = connectedRuntimeHarnesses(nextHarnesses);
         setHarnesses(nextHarnesses);
         setRuntime((current) => {
-          if (current && nextHarnesses.some((item) => item.alias === current)) return current;
-          return nextHarnesses.find((item) => item.alias === CLAUDE_RUNTIME)?.alias ?? nextHarnesses[0]?.alias ?? "";
+          return selectableRuntimeAlias(current, nextRuntimeOptions);
         });
         setSessionCount(nextSessions.length);
         setAgentCount(nextAgents.length);
@@ -110,10 +125,12 @@ function SessionsStart() {
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load runtimes"));
   }, []);
 
+  const runtimeOptions = useMemo(() => connectedRuntimeHarnesses(harnesses), [harnesses]);
   const selectedRuntime = useMemo(
-    () => harnesses.find((item) => item.alias === runtime),
-    [runtime, harnesses],
+    () => runtimeOptions.find((item) => item.alias === runtime),
+    [runtime, runtimeOptions],
   );
+  const selectedRuntimeSpec = selectedRuntime?.api_spec ?? null;
   const selectedAgent = useMemo(
     () => savedAgents.find((agent) => agent.id === selectedAgentId) ?? null,
     [savedAgents, selectedAgentId],
@@ -130,13 +147,12 @@ function SessionsStart() {
     (!needsRuntime ||
       (runtime !== "" &&
         Boolean(selectedRuntime?.connected) &&
-        (resolveApiSpec(runtime, harnesses) !== "cursor" || repository.trim().length > 0)));
+        (selectedRuntimeSpec !== "cursor" || repository.trim().length > 0)));
 
   useEffect(() => {
     if (!selectedAgentRuntime) return;
-    if (!harnesses.some((item) => item.alias === selectedAgentRuntime)) return;
-    setRuntime(selectedAgentRuntime);
-  }, [harnesses, selectedAgentRuntime]);
+    setRuntime(selectableRuntimeAlias(selectedAgentRuntime, runtimeOptions));
+  }, [runtimeOptions, selectedAgentRuntime]);
 
   const startSession = async () => {
     const trimmed = prompt.trim();
@@ -163,7 +179,6 @@ function SessionsStart() {
           ? await createSession(title, selectedAgent.id)
           : await (async () => {
               const runtimeForSession = runtimeId as AgentRuntimeId;
-              const runtimeSpec = resolveApiSpec(runtimeForSession, harnesses);
               const model = runtimeSupportsModelDiscovery(runtimeForSession)
                 ? selectedRuntimeModel(await listModels(runtimeForSession), "")
                 : defaultModelForRuntime(runtimeForSession);
@@ -185,7 +200,7 @@ function SessionsStart() {
                   skills: [],
                 }));
               const environment =
-                runtimeSpec === "cursor" ? cursorEnvironment(repository, ref) : {};
+                selectedRuntimeSpec === "cursor" ? cursorEnvironment(repository, ref) : {};
               shouldAutostartPrompt = false;
               return createSession(title, agent.id, {
                 runtime: runtimeForSession,
@@ -254,7 +269,7 @@ function SessionsStart() {
                   setSelectedAgentId(nextAgentId);
                   const nextAgent = savedAgents.find((agent) => agent.id === nextAgentId) ?? null;
                   const nextRuntime = configuredRuntime(nextAgent);
-                  if (nextRuntime) setRuntime(nextRuntime);
+                  if (nextRuntime) setRuntime(selectableRuntimeAlias(nextRuntime, runtimeOptions));
                 }}
               >
                 <SelectTrigger className="h-10 w-auto min-w-[230px] max-w-[320px] rounded-full border border-border bg-background px-3 text-left text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50">
@@ -304,31 +319,43 @@ function SessionsStart() {
                     </span>
                     <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted">
                       <BrandIcon
-                        id={runtimeBrandIconId(runtime, resolveApiSpec(runtime, harnesses))}
+                        id={runtimeBrandIconId(
+                          selectedRuntime?.alias ?? "",
+                          selectedRuntimeSpec,
+                        )}
                         className="size-4"
                       />
                     </span>
                     <span className="truncate text-sm font-medium">
-                      {selectedRuntime?.display_name ?? (runtime ? runtimeLabel(runtime) : "Select runtime")}
+                      {selectedRuntime?.display_name ?? (harnesses.length > 0 ? "No configured runtime" : "Select runtime")}
                     </span>
                   </span>
                 </SelectTrigger>
                 <SelectContent className="w-[340px]">
-                  {harnesses.map((item) => (
-                    <SelectItem key={item.alias} value={item.alias} disabled={!item.connected} className="py-3">
-                      <span className="flex min-w-0 items-center gap-3">
-                        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-                          <BrandIcon id={runtimeBrandIconId(item.alias, item.api_spec)} className="size-4" />
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium">{item.display_name}</span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {runtimeSubtitle(item)}
+                  {runtimeOptions.length > 0 ? (
+                    runtimeOptions.map((item) => (
+                      <SelectItem key={item.alias} value={item.alias} className="py-3">
+                        <span className="flex min-w-0 items-center gap-3">
+                          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+                            <BrandIcon id={runtimeBrandIconId(item.alias, item.api_spec)} className="size-4" />
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium">{item.display_name}</span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {runtimeSubtitle(item)}
+                            </span>
                           </span>
                         </span>
-                      </span>
-                    </SelectItem>
-                  ))}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <div className="px-3 py-3 text-sm text-muted-foreground">
+                      No configured runtimes
+                    </div>
+                  )}
+                  <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+                    Go to AI Gateway &gt; Agent Runtimes to configure more runtimes.
+                  </div>
                 </SelectContent>
               </Select>
               <Button variant="ghost" size="icon-sm" disabled aria-label="Voice input (coming soon)" className="ml-auto hidden text-[#5d5a55] 2xl:inline-flex">
@@ -349,7 +376,7 @@ function SessionsStart() {
                 <span>Run</span>
               </Button>
             </div>
-            {resolveApiSpec(runtime, harnesses) === "cursor" && (
+            {selectedRuntimeSpec === "cursor" && (
               <div className="grid gap-2 border-t border-border bg-muted/40 px-4 py-3 sm:grid-cols-[1fr_120px]">
                 <Input
                   value={repository}
