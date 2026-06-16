@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use serde_json::Value;
 use sqlx::PgPool;
 use tracing::warn;
 
@@ -9,13 +10,13 @@ use crate::{
     errors::GatewayError,
     http::sessions::{enqueue_prompt_text, runtime_event_stream_for_session},
     proxy::state::AppState,
+    sdk::agents::AgentEvent,
 };
 
 use super::{
     config::load_service_account_json,
-    reply_lock::GoogleChatPromptLock,
+    locks::GoogleChatPromptLock,
     reply_stream::GoogleChatReply,
-    storage::last_message_seq,
     types::{GoogleChatAgentConfig, GoogleChatIncomingMessage},
     web_api,
 };
@@ -61,7 +62,7 @@ async fn run_google_chat_prompt(
         Err(error) => return fail_claim(&pool, &agent, &message, error).await,
     };
     let _lock = GoogleChatPromptLock::acquire(&state.keyed_locks, &session_id).await;
-    let baseline_seq = match last_message_seq(&pool, &session_id).await {
+    let baseline_seq = match google_chat::repository::last_message_seq(&pool, &session_id).await {
         Ok(value) => value,
         Err(error) => return fail_claim(&pool, &agent, &message, error).await,
     };
@@ -193,4 +194,60 @@ async fn enqueue_or_report(
         return Err(error);
     }
     Ok(())
+}
+
+pub(super) fn event_payload(line: &str) -> Option<(String, Value)> {
+    let data = line.strip_prefix("data: ")?;
+    let payload: Value = serde_json::from_str(data.trim()).ok()?;
+    Some((
+        payload.get("type")?.as_str()?.to_owned(),
+        payload.get("properties")?.clone(),
+    ))
+}
+
+pub(super) fn runtime_text(event: &AgentEvent) -> Option<String> {
+    event
+        .data
+        .get("text")
+        .and_then(Value::as_str)
+        .or_else(|| event.data.get("delta").and_then(Value::as_str))
+        .or_else(|| nested_str(&event.data, "delta", "text"))
+        .or_else(|| nested_str(&event.data, "part", "text"))
+        .map(str::to_owned)
+        .or_else(|| content_text(event.data.get("content")?))
+        .or_else(|| content_text(event.data.get("message")?.get("content")?))
+}
+
+pub(super) fn runtime_status(event: &AgentEvent) -> Option<&str> {
+    event
+        .data
+        .get("status")
+        .and_then(Value::as_str)
+        .or_else(|| nested_str(&event.data, "status", "type"))
+}
+
+fn content_text(value: &Value) -> Option<String> {
+    let blocks = value.as_array()?;
+    let text = blocks
+        .iter()
+        .filter_map(|block| {
+            block
+                .get("text")
+                .and_then(Value::as_str)
+                .or_else(|| block.get("content").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.is_empty()).then_some(text)
+}
+
+fn nested_str<'a>(
+    data: &'a serde_json::Map<String, Value>,
+    parent: &str,
+    field: &str,
+) -> Option<&'a str> {
+    data.get(parent)
+        .and_then(Value::as_object)
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_str)
 }

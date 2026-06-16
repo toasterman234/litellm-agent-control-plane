@@ -1,4 +1,3 @@
-pub mod bindings;
 pub(crate) mod config;
 mod dispatch;
 pub(crate) mod dm_api;
@@ -15,8 +14,6 @@ mod reply_format;
 mod reply_lock;
 mod reply_storage;
 mod reply_stream;
-pub mod repository;
-pub mod schema;
 mod signature;
 pub(crate) mod types;
 pub(crate) mod user_ids;

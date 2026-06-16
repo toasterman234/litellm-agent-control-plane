@@ -10,8 +10,8 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::{
-    channels::slack, db::managed_agents::registry::schema::ManagedAgentRow, errors::GatewayError,
-    http::sessions::create_runtime_session_for_agent, proxy::state::AppState,
+    db::managed_agents::registry::schema::ManagedAgentRow, db::managed_agents::slack,
+    errors::GatewayError, http::sessions::create_runtime_session_for_agent, proxy::state::AppState,
 };
 
 use super::{

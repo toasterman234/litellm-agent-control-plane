@@ -2,8 +2,15 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
-    channels::slack::{
-        self,
+    db::managed_agents::{
+        registry::{
+            self,
+            schema::{ManagedAgentRow, UpdateManagedAgent},
+        },
+        slack,
+    },
+    errors::GatewayError,
+    http::managed_agents::slack::{
         config::{
             app_config_token_key, client_secret_key, load_secret, provider_id_for,
             signing_secret_key,
@@ -11,11 +18,6 @@ use crate::{
         manifest_api,
         types::{SlackAgentConfig, DEFAULT_VAULT_USER},
     },
-    db::managed_agents::registry::{
-        self,
-        schema::{ManagedAgentRow, UpdateManagedAgent},
-    },
-    errors::GatewayError,
     proxy::{state::AppState, vault},
 };
 

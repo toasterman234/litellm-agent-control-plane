@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::{channels::slack, errors::GatewayError};
+use crate::{db::managed_agents::slack, errors::GatewayError};
 
 use super::{
     config::{load_agent, slack_config},

@@ -2,9 +2,12 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
-    channels::slack::{self, config::slack_config},
-    db::managed_agents::registry::{self, schema::ManagedAgentRow},
+    db::managed_agents::{
+        registry::{self, schema::ManagedAgentRow},
+        slack,
+    },
     errors::GatewayError,
+    http::managed_agents::slack::config::slack_config,
     proxy::state::AppState,
 };
 

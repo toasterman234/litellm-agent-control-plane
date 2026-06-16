@@ -1,8 +1,22 @@
-use sqlx::PgPool;
+use serde::Serialize;
+use serde_json::Value;
+use sqlx::{FromRow, PgPool};
 
-use crate::{db::managed_agents::now_ms, errors::GatewayError};
+use crate::{
+    db::managed_agents::{messages, now_ms},
+    errors::GatewayError,
+};
 
-use super::schema::GoogleChatSpaceSessionRow;
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct GoogleChatSpaceSessionRow {
+    pub agent_id: String,
+    pub conversation_key: String,
+    pub session_id: String,
+    pub space_name: String,
+    pub thread_name: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
 
 const EVENT_PROCESSING_TIMEOUT_MS: i64 = 5 * 60 * 1000;
 
@@ -218,4 +232,42 @@ pub async fn fail_event(pool: &PgPool, agent_id: &str, event_id: &str) {
     .bind(now_ms())
     .execute(pool)
     .await;
+}
+
+pub(crate) async fn last_message_seq(pool: &PgPool, session_id: &str) -> Result<i32, GatewayError> {
+    let rows = messages::repository::list(pool, session_id).await?;
+    Ok(rows.into_iter().map(|row| row.seq).max().unwrap_or(0))
+}
+
+pub(crate) async fn persisted_assistant_text_after(
+    pool: &PgPool,
+    session_id: &str,
+    baseline_seq: i32,
+) -> Result<Option<String>, GatewayError> {
+    let rows = messages::repository::list(pool, session_id).await?;
+    for row in rows.into_iter().rev() {
+        if row.seq <= baseline_seq {
+            continue;
+        }
+        let info: Value = serde_json::from_str(&row.info_json)?;
+        if info.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if let Some(text) = text_parts(&row.parts_json)? {
+            return Ok(Some(text));
+        }
+    }
+    Ok(None)
+}
+
+fn text_parts(parts_json: &str) -> Result<Option<String>, GatewayError> {
+    let parts: Value = serde_json::from_str(parts_json)?;
+    let text = parts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    Ok((!text.trim().is_empty()).then_some(text))
 }

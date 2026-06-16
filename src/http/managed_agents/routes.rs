@@ -5,10 +5,7 @@ use axum::{
     Router,
 };
 
-use crate::{
-    channels::{google_chat, slack, teams},
-    proxy::state::AppState,
-};
+use crate::{channels::google_chat, proxy::state::AppState};
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -149,25 +146,28 @@ fn inbox_routes() -> Router<Arc<AppState>> {
 
 fn slack_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/agents/{agent_id}/slack/events", post(slack::events))
+        .route(
+            "/api/agents/{agent_id}/slack/events",
+            post(super::slack::events),
+        )
         .route(
             "/api/agents/{agent_id}/slack/interactivity",
-            post(slack::interactivity),
+            post(super::slack::interactivity),
         )
         .route(
             "/api/agents/{agent_id}/slack/oauth-state",
-            post(slack::oauth_state),
+            post(super::slack::oauth_state),
         )
         .route(
             "/host-oauth-callback/{provider_id}",
-            get(slack::oauth_callback),
+            get(super::slack::oauth_callback),
         )
 }
 
 fn teams_routes() -> Router<Arc<AppState>> {
     Router::new().route(
         "/api/agents/{agent_id}/teams/messages",
-        post(teams::messages),
+        post(super::teams::messages),
     )
 }
 

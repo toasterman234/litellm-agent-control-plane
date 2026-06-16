@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    reply_events::{event_payload, runtime_status, runtime_text},
-    storage::persisted_assistant_text_after,
+    reply::{event_payload, runtime_status, runtime_text},
+    repository::persisted_assistant_text_after,
     types::GoogleChatIncomingMessage,
     web_api,
 };

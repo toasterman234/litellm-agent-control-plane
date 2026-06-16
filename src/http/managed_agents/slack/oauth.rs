@@ -9,10 +9,12 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::{
-    channels::slack,
-    db::managed_agents::registry::{
-        self,
-        schema::{ManagedAgentRow, UpdateManagedAgent},
+    db::managed_agents::{
+        registry::{
+            self,
+            schema::{ManagedAgentRow, UpdateManagedAgent},
+        },
+        slack,
     },
     errors::GatewayError,
     proxy::{state::AppState, vault},
