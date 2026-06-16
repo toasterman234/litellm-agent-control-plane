@@ -4,7 +4,8 @@ use sqlx::PgPool;
 use tracing::warn;
 
 use crate::{
-    db::managed_agents::{google_chat, registry::schema::ManagedAgentRow},
+    channels::google_chat,
+    db::managed_agents::registry::schema::ManagedAgentRow,
     errors::GatewayError,
     http::sessions::{enqueue_prompt_text, runtime_event_stream_for_session},
     proxy::state::AppState,

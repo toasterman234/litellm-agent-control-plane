@@ -8,10 +8,8 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::{
-    db::managed_agents::{
-        google_chat::{self, repository::EventClaim},
-        registry::schema::ManagedAgentRow,
-    },
+    channels::google_chat::{self, repository::EventClaim},
+    db::managed_agents::registry::schema::ManagedAgentRow,
     errors::GatewayError,
     http::sessions::create_runtime_session_for_agent_without_prompt,
     proxy::state::AppState,

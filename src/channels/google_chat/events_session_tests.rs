@@ -1,7 +1,5 @@
 use super::space_session_fallback_key;
-use crate::http::managed_agents::google_chat::types::{
-    GoogleChatIncomingMessage, GoogleChatMessageMode,
-};
+use crate::channels::google_chat::types::{GoogleChatIncomingMessage, GoogleChatMessageMode};
 
 #[test]
 fn threaded_channel_messages_can_fallback_to_space_session() {

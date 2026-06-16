@@ -8,10 +8,8 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::{
-    db::managed_agents::{registry::schema::ManagedAgentRow, teams},
-    errors::GatewayError,
-    http::sessions::create_runtime_session_for_agent_without_prompt,
-    proxy::state::AppState,
+    channels::teams, db::managed_agents::registry::schema::ManagedAgentRow, errors::GatewayError,
+    http::sessions::create_runtime_session_for_agent_without_prompt, proxy::state::AppState,
     sdk::agents::CLAUDE_MANAGED_AGENTS,
 };
 

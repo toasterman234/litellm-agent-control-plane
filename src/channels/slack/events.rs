@@ -9,8 +9,8 @@ use axum::{
 use serde_json::Value;
 
 use crate::{
-    db::managed_agents::slack, errors::GatewayError,
-    http::sessions::create_runtime_session_for_agent, proxy::state::AppState,
+    channels::slack, errors::GatewayError, http::sessions::create_runtime_session_for_agent,
+    proxy::state::AppState,
 };
 
 use super::{

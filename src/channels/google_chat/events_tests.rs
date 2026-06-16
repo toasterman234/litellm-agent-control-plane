@@ -2,10 +2,10 @@ use serde_json::{json, Value};
 
 use super::{agent_runtime, can_start_session, incoming_message_for_app};
 use crate::{
-    db::managed_agents::registry::schema::ManagedAgentRow,
-    http::managed_agents::google_chat::types::{
+    channels::google_chat::types::{
         GoogleChatEvent, GoogleChatIncomingMessage, GoogleChatMessageMode,
     },
+    db::managed_agents::registry::schema::ManagedAgentRow,
     sdk::agents::CLAUDE_MANAGED_AGENTS,
 };
 

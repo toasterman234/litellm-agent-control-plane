@@ -1,5 +1,4 @@
 pub mod files;
-pub mod google_chat;
 pub mod import;
 mod import_types;
 pub mod inbox;
@@ -10,8 +9,6 @@ pub mod routines;
 pub mod rules;
 pub mod runs;
 pub mod skills;
-pub mod slack;
-pub mod teams;
 
 use axum::http::HeaderMap;
 use sqlx::PgPool;
