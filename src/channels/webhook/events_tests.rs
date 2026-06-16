@@ -1,10 +1,11 @@
 use axum::http::{HeaderMap, HeaderValue};
 use serde_json::json;
 
-use super::{
-    authorization_token, constant_time_eq, request_id, session_title, truncate_title,
-    verify_webhook_secret, webhook_prompt,
+use super::super::{
+    auth::{authorization_token, constant_time_eq, verify_webhook_secret},
+    metadata::{request_id, session_title, truncate_title},
 };
+use super::webhook_prompt;
 
 #[test]
 fn verify_webhook_secret_accepts_authorization_bearer() {
