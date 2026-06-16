@@ -1643,6 +1643,16 @@ export async function triggerRoutine(id: string): Promise<AgentRunStart> {
   return jsonOrThrow<AgentRunStart>(res);
 }
 
+export async function getAgentRunLogs(agentId: string, runId: string): Promise<string> {
+  const res = await req(
+    `/api/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/logs`,
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text().catch(() => ""));
+  }
+  return res.text();
+}
+
 export async function createSlackOAuthState(agentId: string): Promise<string> {
   const res = await req(`/api/agents/${encodeURIComponent(agentId)}/slack/oauth-state`, {
     method: "POST",

@@ -146,6 +146,7 @@ export interface Routine {
   timezone: string;
   status: "active" | "paused" | string;
   last_run_id?: string | null;
+  last_session_id?: string | null;
   last_run_at?: number | null;
   created_at: number;
   updated_at: number;
@@ -163,8 +164,10 @@ export interface AgentFile {
 export interface AgentRunStart {
   run_id: string;
   agent_id: string;
+  session_id?: string;
   status: string;
   event_url: string;
+  logs_url?: string;
 }
 
 export interface VaultKeyEntry {

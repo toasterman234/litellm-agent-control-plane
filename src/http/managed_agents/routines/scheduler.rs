@@ -227,6 +227,7 @@ mod tests {
             timezone: "America/Los_Angeles".to_owned(),
             status: "active".to_owned(),
             last_run_id: None,
+            last_session_id: None,
             last_run_at,
             created_at,
             updated_at: created_at,

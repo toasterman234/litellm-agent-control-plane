@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -27,6 +28,7 @@ import { ScheduleEditor } from "@/components/schedule-editor";
 import {
   createRoutine,
   deleteRoutine,
+  getAgentRunLogs,
   listAgents,
   listRoutines,
   triggerRoutine,
@@ -64,6 +66,7 @@ function timeAgo(ms?: number | null): string {
 }
 
 export default function RoutinesPage() {
+  const router = useRouter();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [routines, setRoutines] = useState<Routine[] | null>(null);
   const [open, setOpen] = useState(false);
@@ -73,6 +76,11 @@ export default function RoutinesPage() {
   const [triggeringId, setTriggeringId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logsTitle, setLogsTitle] = useState("Routine run logs");
+  const [logsText, setLogsText] = useState("");
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
 
   const agentsById = useMemo(
     () => new Map(agents.map((agent) => [agent.id, agent])),
@@ -159,19 +167,34 @@ export default function RoutinesPage() {
     setTriggeringId(routine.id);
     setError(null);
     try {
-      const run = await triggerRoutine(routine.id);
-      setRoutines((current) =>
-        current?.map((item) =>
-          item.id === routine.id
-            ? { ...item, last_run_id: run.run_id, last_run_at: Date.now() }
-            : item,
-        ) ?? current,
-      );
+      await triggerRoutine(routine.id);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to trigger routine");
     } finally {
       setTriggeringId(null);
+    }
+  };
+
+  const openLastRun = async (routine: Routine) => {
+    if (routine.last_session_id) {
+      router.push(`/chat/?id=${encodeURIComponent(routine.last_session_id)}`);
+      return;
+    }
+    if (!routine.last_run_id) return;
+
+    setLogsOpen(true);
+    setLogsTitle(`${routine.name} logs`);
+    setLogsText("");
+    setLogsError(null);
+    setLogsLoading(true);
+    try {
+      const logs = await getAgentRunLogs(routine.agent_id, routine.last_run_id);
+      setLogsText(logs.trim() ? logs : "No logs were captured.");
+    } catch (err) {
+      setLogsError(err instanceof Error ? err.message : "Failed to load run logs");
+    } finally {
+      setLogsLoading(false);
     }
   };
 
@@ -207,6 +230,8 @@ export default function RoutinesPage() {
             )}
             {routines?.map((routine) => {
               const agent = agentsById.get(routine.agent_id);
+              const lastRun = timeAgo(routine.last_run_at);
+              const canOpenLastRun = Boolean(routine.last_session_id || routine.last_run_id);
               return (
                 <Card key={routine.id} className="flex items-start justify-between gap-4 p-4">
                   <div className="min-w-0">
@@ -231,7 +256,17 @@ export default function RoutinesPage() {
                           {scheduleLabel(routine.cron, routine.timezone)}
                         </span>
                       </span>
-                      <span>Last run {timeAgo(routine.last_run_at)}</span>
+                      {canOpenLastRun ? (
+                        <button
+                          type="button"
+                          onClick={() => void openLastRun(routine)}
+                          className="underline decoration-border underline-offset-2 hover:text-foreground"
+                        >
+                          Last run {lastRun}
+                        </button>
+                      ) : (
+                        <span>Last run {lastRun}</span>
+                      )}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
@@ -332,6 +367,18 @@ export default function RoutinesPage() {
               {saving ? "Saving..." : "Save routine"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
+        <DialogContent className="flex max-h-[88vh] w-[92vw] max-w-3xl flex-col">
+          <DialogHeader>
+            <DialogTitle>{logsTitle}</DialogTitle>
+          </DialogHeader>
+          {logsError && <p className="text-sm text-destructive">{logsError}</p>}
+          <pre className="min-h-48 overflow-auto rounded border border-border bg-muted p-3 font-mono text-xs text-muted-foreground">
+            {logsLoading ? "Loading..." : logsText}
+          </pre>
         </DialogContent>
       </Dialog>
     </div>

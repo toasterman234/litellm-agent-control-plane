@@ -123,13 +123,34 @@ pub async fn mark_triggered(
     sqlx::query_as::<_, RoutineRow>(
         r#"
         UPDATE "LiteLLM_ManagedAgentRoutinesTable"
-        SET last_run_id = $2, last_run_at = $3, updated_at = $3
+        SET last_run_id = $2, last_session_id = NULL, last_run_at = $3, updated_at = $3
         WHERE id = $1
         RETURNING *
         "#,
     )
     .bind(routine_id)
     .bind(run_id)
+    .bind(now_ms())
+    .fetch_optional(pool)
+    .await
+    .map_err(GatewayError::Database)
+}
+
+pub async fn mark_session_triggered(
+    pool: &PgPool,
+    routine_id: &str,
+    session_id: &str,
+) -> Result<Option<RoutineRow>, GatewayError> {
+    sqlx::query_as::<_, RoutineRow>(
+        r#"
+        UPDATE "LiteLLM_ManagedAgentRoutinesTable"
+        SET last_session_id = $2, last_run_id = NULL, last_run_at = $3, updated_at = $3
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(routine_id)
+    .bind(session_id)
     .bind(now_ms())
     .fetch_optional(pool)
     .await

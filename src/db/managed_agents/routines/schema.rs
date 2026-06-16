@@ -11,6 +11,7 @@ pub struct RoutineRow {
     pub timezone: String,
     pub status: String,
     pub last_run_id: Option<String>,
+    pub last_session_id: Option<String>,
     pub last_run_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,

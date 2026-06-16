@@ -16,7 +16,10 @@ use crate::{
         skills::compose::compose_agent_system_prompt,
     },
     errors::GatewayError,
-    http::managed_agents::runs::{execution::spawn_managed_agent_run, types::RunCreateResponse},
+    http::{
+        managed_agents::runs::{execution::spawn_managed_agent_run, types::RunCreateResponse},
+        sessions::{create_runtime_session_for_agent_without_prompt, enqueue_prompt_text},
+    },
     proxy::state::AppState,
 };
 
@@ -47,8 +50,64 @@ pub(crate) async fn trigger_routine_run(
         .await?
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
     let prompt = routine_prompt(&routine, &agent);
+    if let Some(runtime) = runtime_from_agent(&agent) {
+        return trigger_runtime_session(state, pool, routine, agent, prompt, runtime).await;
+    }
+    trigger_legacy_run(state, pool, routine, agent, prompt, host).await
+}
+
+async fn trigger_runtime_session(
+    state: Arc<AppState>,
+    pool: PgPool,
+    routine: RoutineRow,
+    agent: registry::schema::ManagedAgentRow,
+    prompt: String,
+    runtime: String,
+) -> Result<RunCreateResponse, GatewayError> {
+    let session_id = create_runtime_session_for_agent_without_prompt(
+        state.clone(),
+        &pool,
+        routine.agent_id.clone(),
+        runtime,
+        format!("{} run", routine.name),
+        serde_json::json!({}),
+    )
+    .await?;
+    routines::repository::mark_session_triggered(&pool, &routine.id, &session_id).await?;
+    let prompt_session_id = session_id.clone();
+    let prompt_agent_id = routine.agent_id.clone();
+    let prompt_model = agent.model.clone();
+    tokio::spawn(async move {
+        if let Err(error) =
+            enqueue_prompt_text(state, pool, &prompt_session_id, prompt, prompt_model).await
+        {
+            tracing::warn!(
+                agent_id = %prompt_agent_id,
+                session_id = %prompt_session_id,
+                "scheduled routine runtime prompt failed: {error}"
+            );
+        }
+    });
+    Ok(RunCreateResponse {
+        run_id: session_id.clone(),
+        agent_id: routine.agent_id,
+        session_id: session_id.clone(),
+        status: "starting".to_owned(),
+        event_url: format!("/v1/sessions/{session_id}/events/stream"),
+        logs_url: String::new(),
+    })
+}
+
+async fn trigger_legacy_run(
+    state: Arc<AppState>,
+    pool: PgPool,
+    routine: RoutineRow,
+    agent: registry::schema::ManagedAgentRow,
+    prompt: String,
+    host: &str,
+) -> Result<RunCreateResponse, GatewayError> {
     let run = create_run(&pool, &routine, &agent, &prompt).await?;
-    routines::repository::mark_triggered(&pool, routine_id, &run.id).await?;
+    routines::repository::mark_triggered(&pool, &routine.id, &run.id).await?;
     state.agent_runs.track_run(&routine.agent_id, &run.id);
     spawn_managed_agent_run(
         state.clone(),
@@ -70,6 +129,24 @@ pub(crate) async fn trigger_routine_run(
         event_url: "/event".to_owned(),
         logs_url,
     })
+}
+
+fn runtime_from_agent(agent: &registry::schema::ManagedAgentRow) -> Option<String> {
+    agent
+        .config
+        .get("runtime")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|runtime| !runtime.is_empty())
+        .map(str::to_owned)
+        .or_else(|| builtin_runtime(&agent.harness))
+}
+
+fn builtin_runtime(harness: &str) -> Option<String> {
+    let harness = harness.trim();
+    crate::sdk::providers::runtime_registry()
+        .entry_for_id(harness)
+        .map(|_| harness.to_owned())
 }
 
 fn routine_prompt(routine: &RoutineRow, agent: &registry::schema::ManagedAgentRow) -> String {

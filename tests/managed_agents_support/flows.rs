@@ -29,7 +29,7 @@ pub use cursor_runtime::exercise_cursor_runtime_stream;
 pub use gemini_runtime::exercise_gemini_runtime_session;
 pub use platform_mcps::exercise_platform_mcps;
 pub use platform_skill_mcp::assert_agent_skill_edit;
-pub use routines::exercise_routines;
+pub use routines::{exercise_routines, exercise_runtime_routine};
 pub use rules::exercise_rules;
 pub use runtime_catalog::assert_agent_runtime_catalog;
 pub use sessions::exercise_sessions;
@@ -182,9 +182,14 @@ pub async fn exercise_runs(fixture: &AppFixture, agent_id: &str) {
         None,
     )
     .await;
-    assert_eq!(runs["runs"].as_array().unwrap().len(), 1);
-    assert_eq!(runs["runs"][0]["status"], "completed");
-    assert_eq!(runs["runs"][0]["sandbox_id"], "sbx_managed_test");
+    let run_row = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == run_id)
+        .unwrap();
+    assert_eq!(run_row["status"], "completed");
+    assert_eq!(run_row["sandbox_id"], "sbx_managed_test");
 
     let logs = request_raw(
         fixture.app.clone(),

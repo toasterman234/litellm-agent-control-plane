@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::super::{read_events_until_completed, request_json, AppFixture};
+use super::claude_runtime::save_anthropic_credentials;
 
 pub async fn exercise_routines(fixture: &AppFixture, agent_id: &str) {
     let routine_id = create_routine(fixture, agent_id).await;
@@ -8,6 +9,57 @@ pub async fn exercise_routines(fixture: &AppFixture, agent_id: &str) {
     update_routine(fixture, &routine_id).await;
     trigger_routine(fixture, agent_id, &routine_id).await;
     delete_routine(fixture, &routine_id).await;
+}
+
+pub async fn exercise_runtime_routine(fixture: &AppFixture) {
+    let anthropic = save_anthropic_credentials(fixture).await;
+    let agent_id = create_runtime_agent(fixture).await;
+    let routine_id = create_routine(fixture, &agent_id).await;
+    let run = request_json(
+        fixture.app.clone(),
+        "POST",
+        &format!("/api/routines/{routine_id}/trigger"),
+        None,
+    )
+    .await;
+    let session_id = run["session_id"].as_str().unwrap();
+    assert!(session_id.starts_with("ses_"));
+    assert_eq!(run["run_id"], session_id);
+
+    let events = read_events_until_completed(
+        fixture.app.clone(),
+        &format!("/v1/sessions/{session_id}/events/stream"),
+        session_id,
+    )
+    .await;
+    assert!(events.contains("hello from managed agent"));
+
+    let after_trigger = request_json(fixture.app.clone(), "GET", "/api/routines", None).await;
+    assert_eq!(after_trigger["routines"][0]["last_session_id"], session_id);
+    assert!(after_trigger["routines"][0]["last_run_id"].is_null());
+    assert!(
+        after_trigger["routines"][0]["last_run_at"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    anthropic.verify().await;
+}
+
+async fn create_runtime_agent(fixture: &AppFixture) -> String {
+    let created = request_json(
+        fixture.app.clone(),
+        "POST",
+        "/api/agents",
+        Some(json!({
+            "name": "runtime-routine-agent",
+            "owner_id": "user-1",
+            "runtime": "claude_managed_agents",
+            "prompt": "say hello"
+        })),
+    )
+    .await;
+    created["id"].as_str().unwrap().to_owned()
 }
 
 async fn create_routine(fixture: &AppFixture, agent_id: &str) -> String {
@@ -72,6 +124,7 @@ async fn trigger_routine(fixture: &AppFixture, agent_id: &str, routine_id: &str)
 
     let after_trigger = request_json(fixture.app.clone(), "GET", "/api/routines", None).await;
     assert_eq!(after_trigger["routines"][0]["last_run_id"], run_id);
+    assert!(after_trigger["routines"][0]["last_session_id"].is_null());
     assert!(
         after_trigger["routines"][0]["last_run_at"]
             .as_i64()
