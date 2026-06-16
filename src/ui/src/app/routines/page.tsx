@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
 import { Sidebar } from "@/components/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -26,15 +25,15 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { ScheduleEditor } from "@/components/schedule-editor";
 import {
-  createGatewaySession,
   createRoutine,
   deleteRoutine,
   listAgents,
   listRoutines,
+  triggerRoutine,
   updateRoutine,
 } from "@/lib/api";
 import { DEFAULT_TIMEZONE, scheduleLabel } from "@/lib/schedule";
-import type { Agent, AgentRuntimeId, Routine } from "@/lib/types";
+import type { Agent, Routine } from "@/lib/types";
 
 interface RoutineForm {
   agent_id: string;
@@ -65,7 +64,6 @@ function timeAgo(ms?: number | null): string {
 }
 
 export default function RoutinesPage() {
-  const router = useRouter();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [routines, setRoutines] = useState<Routine[] | null>(null);
   const [open, setOpen] = useState(false);
@@ -161,16 +159,15 @@ export default function RoutinesPage() {
     setTriggeringId(routine.id);
     setError(null);
     try {
-      const agent = agentsById.get(routine.agent_id);
-      if (!agent) throw new Error("Routine agent is no longer available");
-      const prompt = routine.prompt.trim();
-      const session = await startRoutineSession(routine, agent, prompt);
-      const params = new URLSearchParams({ id: session.id });
-      if (!session.runtime && prompt) {
-        params.set("prompt", prompt);
-        params.set("autostart", "1");
-      }
-      router.push(`/chat/?${params.toString()}`);
+      const run = await triggerRoutine(routine.id);
+      setRoutines((current) =>
+        current?.map((item) =>
+          item.id === routine.id
+            ? { ...item, last_run_id: run.run_id, last_run_at: Date.now() }
+            : item,
+        ) ?? current,
+      );
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to trigger routine");
     } finally {
@@ -339,34 +336,4 @@ export default function RoutinesPage() {
       </Dialog>
     </div>
   );
-}
-
-async function startRoutineSession(routine: Routine, agent: Agent, prompt: string) {
-  try {
-    return await createGatewaySession(`${routine.name} session`, agent.id, {
-      runtime: runtimeFromAgent(agent),
-      prompt: prompt || undefined,
-    });
-  } catch (error) {
-    if (!isUnsupportedRuntimeError(error)) throw error;
-    return createGatewaySession(`${routine.name} session`, agent.id);
-  }
-}
-
-function isUnsupportedRuntimeError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("unsupported runtime");
-}
-
-function isAgentRuntimeId(value: unknown): value is AgentRuntimeId {
-  return value === "claude_managed_agents" || value === "cursor" || value === "gemini_antigravity";
-}
-
-function runtimeFromAgent(agent: Agent): AgentRuntimeId {
-  const config = agent.config;
-  if (config && typeof config === "object" && !Array.isArray(config)) {
-    const runtime = (config as { runtime?: unknown }).runtime;
-    if (isAgentRuntimeId(runtime)) return runtime;
-  }
-  if (isAgentRuntimeId(agent.harness)) return agent.harness;
-  return "claude_managed_agents";
 }

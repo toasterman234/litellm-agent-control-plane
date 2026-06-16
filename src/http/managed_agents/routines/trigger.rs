@@ -26,7 +26,21 @@ pub async fn trigger(
     Path(routine_id): Path<String>,
 ) -> Result<(StatusCode, Json<RunCreateResponse>), GatewayError> {
     let pool = crate::http::managed_agents::db(&state, &headers)?.clone();
-    let routine = routines::repository::get(&pool, &routine_id)
+    let host = headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("localhost");
+    let response = trigger_routine_run(state, pool, &routine_id, host).await?;
+    Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+pub(crate) async fn trigger_routine_run(
+    state: Arc<AppState>,
+    pool: PgPool,
+    routine_id: &str,
+    host: &str,
+) -> Result<RunCreateResponse, GatewayError> {
+    let routine = routines::repository::get(&pool, routine_id)
         .await?
         .ok_or_else(|| GatewayError::NotFound("routine not found".to_owned()))?;
     let agent = registry::repository::get(&pool, &routine.agent_id)
@@ -34,7 +48,7 @@ pub async fn trigger(
         .ok_or_else(|| GatewayError::NotFound("agent not found".to_owned()))?;
     let prompt = routine_prompt(&routine, &agent);
     let run = create_run(&pool, &routine, &agent, &prompt).await?;
-    routines::repository::mark_triggered(&pool, &routine_id, &run.id).await?;
+    routines::repository::mark_triggered(&pool, routine_id, &run.id).await?;
     state.agent_runs.track_run(&routine.agent_id, &run.id);
     spawn_managed_agent_run(
         state.clone(),
@@ -44,25 +58,18 @@ pub async fn trigger(
         prompt,
         run.id.clone(),
     );
-    let host = headers
-        .get("host")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost");
     let logs_url = format!(
         "http://{host}/api/agents/{}/runs/{}/logs",
         routine.agent_id, run.id
     );
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(RunCreateResponse {
-            run_id: run.id,
-            agent_id: routine.agent_id,
-            session_id: run.session_id.unwrap_or_default(),
-            status: run.status,
-            event_url: "/event".to_owned(),
-            logs_url,
-        }),
-    ))
+    Ok(RunCreateResponse {
+        run_id: run.id,
+        agent_id: routine.agent_id,
+        session_id: run.session_id.unwrap_or_default(),
+        status: run.status,
+        event_url: "/event".to_owned(),
+        logs_url,
+    })
 }
 
 fn routine_prompt(routine: &RoutineRow, agent: &registry::schema::ManagedAgentRow) -> String {
