@@ -365,13 +365,6 @@ def validate_mcp_servers_input(mcp_servers: list[dict[str, Any]] | None) -> None
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def sync_openclaw_mcp_config_or_400(agent_row: sqlite3.Row) -> None:
-    try:
-        sync_openclaw_mcp_config(agent_row)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
 def ensure_mcp_tool_policy(config: dict[str, Any], has_mcp_servers: bool) -> None:
     if not has_mcp_servers:
         return
@@ -786,7 +779,16 @@ def run_agent(session_id: str, prompt: str) -> None:
             ):
                 break
             try:
-                payload = call_openclaw_chat(session_id, prompt, agent_row)
+                latest_agent_row = get_agent(session["agent_id"])
+                if not latest_agent_row:
+                    append_event(
+                        session_id,
+                        "session.error",
+                        {"error": {"message": "agent not found"}},
+                    )
+                    set_session_status(session_id, "error")
+                    break
+                payload = call_openclaw_chat(session_id, prompt, latest_agent_row)
                 if abort_flag.is_set():
                     break
                 for tool_call in parse_chat_tool_calls(payload):
@@ -807,7 +809,7 @@ def run_agent(session_id: str, prompt: str) -> None:
                     "agent.message",
                     {
                         "content": [{"type": "text", "text": text}],
-                        "model": agent_row["model"] or DEFAULT_MODEL,
+                        "model": latest_agent_row["model"] or DEFAULT_MODEL,
                     },
                     abort_flag,
                 ):
@@ -866,7 +868,6 @@ def create_agent(input: CreateAgentRequest) -> dict[str, Any]:
             ),
         )
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-        sync_openclaw_mcp_config_or_400(row)
     return row_to_agent(row)
 
 
@@ -919,7 +920,6 @@ def update_agent(agent_id: str, input: CreateAgentRequest) -> dict[str, Any]:
             ),
         )
         row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
-        sync_openclaw_mcp_config_or_400(row)
     return row_to_agent(row)
 
 
