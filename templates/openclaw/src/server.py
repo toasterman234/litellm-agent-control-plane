@@ -46,6 +46,8 @@ abort_flags: dict[str, threading.Event] = {}
 TERMINAL_EVENTS = {"session.status_idle", "session.error"}
 BRIDGE_CONFIG_KEY = "_litellmAgentPlatform"
 MANAGED_MCP_CONFIG_KEY = "managedMcpServers"
+MANAGED_BY_CONFIG_KEY = "managedBy"
+BRIDGE_MANAGED_BY = "litellm-agent-platform"
 PERSISTED_MCP_SECRET_FIELDS = {
     "authorization_token",
     "headers",
@@ -268,6 +270,25 @@ def store_managed_mcp_names(config: dict[str, Any], names: set[str]) -> None:
     bridge_config[MANAGED_MCP_CONFIG_KEY] = sorted(names)
 
 
+def bridge_managed_mcp_server(server: Any) -> bool:
+    if not isinstance(server, dict):
+        return False
+    bridge_config = server.get(BRIDGE_CONFIG_KEY)
+    return (
+        isinstance(bridge_config, dict)
+        and bridge_config.get(MANAGED_BY_CONFIG_KEY) == BRIDGE_MANAGED_BY
+    )
+
+
+def mark_bridge_managed_mcp_server(server: dict[str, Any]) -> dict[str, Any]:
+    marked = dict(server)
+    bridge_config = marked.get(BRIDGE_CONFIG_KEY)
+    bridge_config = dict(bridge_config) if isinstance(bridge_config, dict) else {}
+    bridge_config[MANAGED_BY_CONFIG_KEY] = BRIDGE_MANAGED_BY
+    marked[BRIDGE_CONFIG_KEY] = bridge_config
+    return marked
+
+
 def server_name(server: dict[str, Any]) -> str:
     for key in ("name", "server_id", "id"):
         value = server.get(key)
@@ -393,15 +414,18 @@ def sync_openclaw_mcp_config(agent_row: sqlite3.Row) -> None:
         if not isinstance(servers, dict):
             raise RuntimeError("OpenClaw config mcp.servers must be an object")
 
-        previous_names = stored_managed_mcp_names(config)
+        previous_names = stored_managed_mcp_names(config) | {
+            name for name, server in servers.items() if bridge_managed_mcp_server(server)
+        }
         for name in previous_names - set(desired):
             servers.pop(name, None)
         managed_names: set[str] = set()
         for name, server_config in desired.items():
             existing = servers.get(name)
-            if name not in previous_names and existing is not None:
+            is_managed = name in previous_names or bridge_managed_mcp_server(existing)
+            if not is_managed and existing is not None:
                 raise ValueError(f"mcp server {name} conflicts with existing OpenClaw config")
-            servers[name] = server_config
+            servers[name] = mark_bridge_managed_mcp_server(server_config)
             managed_names.add(name)
         store_managed_mcp_names(config, managed_names)
         ensure_mcp_tool_policy(config, bool(desired))
