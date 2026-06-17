@@ -20,90 +20,101 @@ pub struct PluginManifest {
     pub capabilities: Vec<&'static str>,
 }
 
+fn user_nav_items() -> Vec<NavItem> {
+    vec![
+        NavItem {
+            key: "acp-sessions",
+            label: "Sessions",
+            icon: "MessageOutlined",
+            path: "/sessions",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-agents",
+            label: "Agents",
+            icon: "RobotOutlined",
+            path: "/agents",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-routines",
+            label: "Routines",
+            icon: "ClockCircleOutlined",
+            path: "/routines",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-inbox",
+            label: "Inbox",
+            icon: "InboxOutlined",
+            path: "/inbox",
+            badge: Some(true),
+        },
+        NavItem {
+            key: "acp-skills",
+            label: "Skills",
+            icon: "ThunderboltOutlined",
+            path: "/skills",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-rules",
+            label: "Rules",
+            icon: "SafetyOutlined",
+            path: "/rules",
+            badge: None,
+        },
+    ]
+}
+
+fn admin_nav_items() -> Vec<NavItem> {
+    vec![
+        NavItem {
+            key: "acp-vault",
+            label: "Vault",
+            icon: "LockOutlined",
+            path: "/vault",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-integrations",
+            label: "Integrations",
+            icon: "PlugOutlined",
+            path: "/integrations",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-runtimes",
+            label: "Agent Runtimes",
+            icon: "ToolOutlined",
+            path: "/runtimes",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-mcp-servers",
+            label: "MCP Servers",
+            icon: "ApiOutlined",
+            path: "/mcp-servers",
+            badge: None,
+        },
+        NavItem {
+            key: "acp-providers",
+            label: "LLM Providers",
+            icon: "DatabaseOutlined",
+            path: "/providers",
+            badge: None,
+        },
+    ]
+}
+
 pub async fn plugin_manifest() -> Result<Json<PluginManifest>, StatusCode> {
+    let mut nav = user_nav_items();
+    nav.extend(admin_nav_items());
     Ok(Json(PluginManifest {
         name: "litellm-platform-plugin",
         display_name: "Agent Control Plane",
         version: env!("CARGO_PKG_VERSION"),
-        nav_items: vec![
-            NavItem {
-                key: "acp-sessions",
-                label: "Sessions",
-                icon: "MessageOutlined",
-                path: "/sessions",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-agents",
-                label: "Agents",
-                icon: "RobotOutlined",
-                path: "/agents",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-routines",
-                label: "Routines",
-                icon: "ClockCircleOutlined",
-                path: "/routines",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-inbox",
-                label: "Inbox",
-                icon: "InboxOutlined",
-                path: "/inbox",
-                badge: Some(true),
-            },
-            NavItem {
-                key: "acp-skills",
-                label: "Skills",
-                icon: "ThunderboltOutlined",
-                path: "/skills",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-rules",
-                label: "Rules",
-                icon: "SafetyOutlined",
-                path: "/rules",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-vault",
-                label: "Vault",
-                icon: "LockOutlined",
-                path: "/vault",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-integrations",
-                label: "Integrations",
-                icon: "PlugOutlined",
-                path: "/integrations",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-runtimes",
-                label: "Agent Runtimes",
-                icon: "ToolOutlined",
-                path: "/runtimes",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-mcp-servers",
-                label: "MCP Servers",
-                icon: "ApiOutlined",
-                path: "/mcp-servers",
-                badge: None,
-            },
-            NavItem {
-                key: "acp-providers",
-                label: "LLM Providers",
-                icon: "DatabaseOutlined",
-                path: "/providers",
-                badge: None,
-            },
-        ],
+        nav_items: nav,
         capabilities: vec!["agents", "routines", "mcp", "sessions", "runtimes"],
     }))
 }

@@ -5,7 +5,6 @@ use std::{
 };
 
 use axum::http::{header::AUTHORIZATION, HeaderMap};
-use serde::Deserialize;
 
 use crate::{errors::GatewayError, proxy::state::AppState};
 
