@@ -1,6 +1,5 @@
 mod agent_runtime_tools;
 pub mod agent_runtimes;
-pub mod plugin_manifest;
 pub mod agents;
 pub mod capabilities;
 pub mod credential_overrides;
@@ -15,6 +14,7 @@ pub mod models;
 pub mod observability;
 pub mod openapi;
 pub mod platform_mcps;
+pub mod plugin_manifest;
 pub mod provider_credentials;
 pub mod provider_errors;
 pub mod responses;

@@ -111,7 +111,10 @@ pub(super) async fn session(pool: &PgPool, session_id: &str) -> Result<SessionRo
         .ok_or_else(|| GatewayError::NotFound("session not found".to_owned()))
 }
 
-pub(super) async fn db<'a>(state: &'a AppState, headers: &HeaderMap) -> Result<&'a PgPool, GatewayError> {
+pub(super) async fn db<'a>(
+    state: &'a AppState,
+    headers: &HeaderMap,
+) -> Result<&'a PgPool, GatewayError> {
     require_any_gateway_key(headers, state).await?;
     state.db.as_ref().ok_or(GatewayError::MissingDatabase)
 }
