@@ -20,7 +20,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ScheduleEditor } from "@/components/schedule-editor";
+import { VaultCredentialsEditor } from "@/components/vault-credentials-editor";
 import {
+  DEFAULT_VAULT_USER,
   apiErrorMessage,
   getAgent,
   updateAgent,
@@ -30,6 +32,7 @@ import {
   listMcpServerTools,
   listMcpUserCredentials,
   listPublicMcpServers,
+  listVaultKeysForUser,
 } from "@/lib/api";
 import {
   integrationFromMcpServer,
@@ -43,7 +46,7 @@ import {
   selectedRuntimeModel,
 } from "@/lib/model-options";
 import { DEFAULT_TIMEZONE } from "@/lib/schedule";
-import type { Agent, AgentRuntime, AgentRuntimeId } from "@/lib/types";
+import type { Agent, AgentRuntime, AgentRuntimeId, VaultKeyEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface FormState {
@@ -56,6 +59,7 @@ interface FormState {
   timezone: string;
   subAgentIds: string[];
   mcpServerIds: string[];
+  vault_keys: string[];
   config: Record<string, unknown>;
 }
 
@@ -200,6 +204,10 @@ function configWithAgentLinks(
   return next;
 }
 
+function vaultUserFromAgent(agent: Agent): string {
+  return agent.owner_id?.trim() || DEFAULT_VAULT_USER;
+}
+
 function AgentEdit() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -215,6 +223,7 @@ function AgentEdit() {
     timezone: DEFAULT_TIMEZONE,
     subAgentIds: [],
     mcpServerIds: [],
+    vault_keys: [],
     config: {},
   });
   const [models, setModels] = useState<string[]>([]);
@@ -225,6 +234,8 @@ function AgentEdit() {
   const [mcpIntegrations, setMcpIntegrations] = useState<Integration[]>([]);
   const [mcpLoading, setMcpLoading] = useState(true);
   const [mcpError, setMcpError] = useState<string | null>(null);
+  const [storedKeyEntries, setStoredKeyEntries] = useState<VaultKeyEntry[]>([]);
+  const [vaultUserId, setVaultUserId] = useState(DEFAULT_VAULT_USER);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -235,13 +246,16 @@ function AgentEdit() {
     let cancelled = false;
     (async () => {
       try {
-        const [ag, agentList, runtimeList] = await Promise.all([
-          getAgent(id),
+        const ag = await getAgent(id);
+        const owner = vaultUserFromAgent(ag);
+        const [agentList, runtimeList, keyEntries] = await Promise.all([
           listAgents(),
           listAgentRuntimes(),
+          listVaultKeysForUser(owner).catch(() => []),
         ]);
         if (cancelled) return;
         const config = objectValue(ag.config);
+        setVaultUserId(owner);
         setForm({
           name: ag.name ?? "",
           description: ag.description ?? "",
@@ -252,10 +266,14 @@ function AgentEdit() {
           timezone: ag.timezone ?? DEFAULT_TIMEZONE,
           subAgentIds: subAgentIdsFromConfig(config),
           mcpServerIds: mcpServerIdsFromConfig(config),
+          vault_keys: Array.isArray(ag.vault_keys)
+            ? ag.vault_keys.filter((key): key is string => typeof key === "string")
+            : [],
           config,
         });
         setAgents(agentList.filter((agent) => agent.id !== id));
         setRuntimes(runtimeList);
+        setStoredKeyEntries(keyEntries);
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : String(e));
@@ -378,6 +396,7 @@ function AgentEdit() {
         runtime: form.runtime,
         cron: cron || null,
         timezone: form.timezone.trim() || "UTC",
+        vault_keys: form.vault_keys,
         config: configWithAgentLinks(
           form.config,
           form.subAgentIds,
@@ -479,6 +498,14 @@ function AgentEdit() {
                     cron={form.cron}
                     timezone={form.timezone}
                     onChange={(next) => setForm({ ...form, ...next })}
+                  />
+
+                  <VaultCredentialsEditor
+                    vaultKeys={form.vault_keys}
+                    storedKeyEntries={storedKeyEntries}
+                    vaultUserId={vaultUserId}
+                    onVaultKeysChange={(vault_keys) => setForm({ ...form, vault_keys })}
+                    onStoredKeyEntriesChange={(updater) => setStoredKeyEntries(updater)}
                   />
 
                   <div className="grid gap-2 rounded-lg border border-border bg-card p-4">

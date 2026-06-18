@@ -1,10 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
-    db::credentials,
     errors::GatewayError,
     proxy::state::AppState,
     sdk::agents::{AgentRuntime, ANTHROPIC_VERSION, MANAGED_AGENTS_BETA},
@@ -12,20 +9,13 @@ use crate::{
 
 use super::CreatedRuntimeSession;
 
-const STORE_PREFIX: &str = "anthropic-managed-agent-mcp-vault:";
-const STORE_ACTOR: &str = "runtime_provision";
+mod credential;
+mod store;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct McpVaultCredential {
-    url: String,
-    token: String,
-}
+use credential::{environment_credentials, gateway_mcp_credentials, stable_hash, VaultCredential};
+use store::{load_stored_vault, save_stored_vault, stored_credential_changed, StoredVault};
 
-#[derive(Debug, Default)]
-struct StoredVault {
-    vault_id: Option<String>,
-    credential_urls: BTreeSet<String>,
-}
+const STORE_PREFIX: &str = "anthropic-managed-agent-vault:";
 
 pub(super) async fn vault_ids(
     state: &AppState,
@@ -37,7 +27,15 @@ pub(super) async fn vault_ids(
         return Ok(None);
     }
 
-    let required = gateway_mcp_credentials(state, mcp_servers);
+    let mut required: Vec<VaultCredential> = gateway_mcp_credentials(state, mcp_servers)
+        .into_iter()
+        .map(VaultCredential::McpStaticBearer)
+        .collect();
+    required.extend(
+        environment_credentials(created)?
+            .into_iter()
+            .map(VaultCredential::EnvironmentVariable),
+    );
     if required.is_empty() {
         return Ok(None);
     }
@@ -45,6 +43,10 @@ pub(super) async fn vault_ids(
     let store_name = store_name(created);
     let mut stored = load_stored_vault(pool, &store_name).await?;
     let mut changed = false;
+    if stored_credential_changed(&stored, &required) {
+        stored = StoredVault::default();
+        changed = true;
+    }
     let vault_id = match stored.vault_id.clone() {
         Some(vault_id) => vault_id,
         None => {
@@ -56,11 +58,21 @@ pub(super) async fn vault_ids(
     };
 
     for credential in required {
-        if stored.credential_urls.contains(&credential.url) {
+        let credential_key = credential.storage_key();
+        let credential_fingerprint = credential.fingerprint();
+        let unchanged = stored
+            .credential_fingerprints
+            .get(&credential_key)
+            .map(|stored| stored == &credential_fingerprint)
+            .unwrap_or(true);
+        if stored.credential_keys.contains(&credential_key) && unchanged {
             continue;
         }
         create_credential(state, created, &vault_id, &credential).await?;
-        stored.credential_urls.insert(credential.url);
+        stored.credential_keys.insert(credential_key.clone());
+        stored
+            .credential_fingerprints
+            .insert(credential_key, credential_fingerprint);
         changed = true;
     }
 
@@ -69,90 +81,6 @@ pub(super) async fn vault_ids(
     }
 
     Ok(Some(vec![vault_id]))
-}
-
-fn gateway_mcp_credentials(state: &AppState, mcp_servers: &[Value]) -> Vec<McpVaultCredential> {
-    let Some(proxy_base) = state.resolved_mcp_proxy_base_url() else {
-        return Vec::new();
-    };
-    let proxy_prefix = format!("{}/", proxy_base.trim_end_matches('/'));
-    let master_key = state.config.general_settings.master_key.as_deref();
-    let mut by_url = BTreeMap::new();
-
-    for server in mcp_servers {
-        let Some(url) = server
-            .get("url")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|url| url.starts_with(&proxy_prefix))
-        else {
-            continue;
-        };
-        let token = server
-            .get("authorization_token")
-            .and_then(Value::as_str)
-            .or(master_key);
-        if let Some(token) = token {
-            by_url
-                .entry(url.to_owned())
-                .or_insert_with(|| token.to_owned());
-        }
-    }
-
-    by_url
-        .into_iter()
-        .map(|(url, token)| McpVaultCredential { url, token })
-        .collect()
-}
-
-async fn load_stored_vault(pool: &PgPool, store_name: &str) -> Result<StoredVault, GatewayError> {
-    let Some(row) = credentials::get_by_name(pool, store_name).await? else {
-        return Ok(StoredVault::default());
-    };
-    Ok(StoredVault {
-        vault_id: row
-            .credential_values
-            .get("vault_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        credential_urls: row
-            .credential_values
-            .get("credential_urls")
-            .and_then(Value::as_array)
-            .map(|urls| {
-                urls.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
-    })
-}
-
-async fn save_stored_vault(
-    pool: &PgPool,
-    store_name: &str,
-    stored: &StoredVault,
-) -> Result<(), GatewayError> {
-    let credential_urls = stored
-        .credential_urls
-        .iter()
-        .cloned()
-        .collect::<Vec<String>>();
-    credentials::upsert(
-        pool,
-        store_name,
-        json!({
-            "vault_id": stored.vault_id,
-            "credential_urls": credential_urls,
-        }),
-        json!({
-            "provider": "anthropic",
-            "purpose": "managed_agent_mcp_vault",
-        }),
-        STORE_ACTOR,
-    )
-    .await
 }
 
 async fn create_vault(
@@ -191,7 +119,7 @@ async fn create_credential(
     state: &AppState,
     created: &CreatedRuntimeSession,
     vault_id: &str,
-    credential: &McpVaultCredential,
+    credential: &VaultCredential,
 ) -> Result<(), GatewayError> {
     let response = state
         .http
@@ -202,13 +130,7 @@ async fn create_credential(
         .header("x-api-key", &created.resolved.credential.api_key)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("anthropic-beta", MANAGED_AGENTS_BETA)
-        .json(&json!({
-            "auth": {
-                "type": "static_bearer",
-                "mcp_server_url": credential.url,
-                "token": credential.token
-            }
-        }))
+        .json(&json!({ "auth": credential.auth() }))
         .send()
         .await
         .map_err(GatewayError::Upstream)?;
@@ -226,9 +148,10 @@ fn store_name(created: &CreatedRuntimeSession) -> String {
     format!(
         "{STORE_PREFIX}{}",
         stable_hash(&format!(
-            "{}\0{}",
+            "{}\0{}\0{}",
             anthropic_v1_base(&created.resolved.credential.api_base),
-            created.resolved.credential.api_key
+            created.resolved.credential.api_key,
+            created.agent.id
         ))
     )
 }
@@ -240,15 +163,6 @@ fn anthropic_v1_base(api_base: &str) -> String {
     } else {
         format!("{base}/v1")
     }
-}
-
-fn stable_hash(input: &str) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in input.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
 }
 
 #[cfg(test)]

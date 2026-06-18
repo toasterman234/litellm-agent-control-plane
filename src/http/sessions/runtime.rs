@@ -4,15 +4,12 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
-    db::{
-        credentials,
-        managed_agents::{
-            registry::{self, schema::ManagedAgentRow},
-            sessions::{self, schema::SessionRow},
-        },
+    db::managed_agents::{
+        registry::{self, schema::ManagedAgentRow},
+        sessions::{self, schema::SessionRow},
     },
     errors::GatewayError,
-    proxy::{credential_crypto, state::AppState},
+    proxy::state::AppState,
 };
 
 use super::{
@@ -22,6 +19,7 @@ use super::{
     },
     runtime_provision::provision_runtime_session,
     runtime_sdk::{agent_sdk_error, register_runtime_session, send_events_params},
+    runtime_vault::resolve_agent_vault_keys,
     storage::persist_message,
     types::{CreateSessionRequest, SessionResponse},
 };
@@ -259,36 +257,4 @@ fn runtime_prompt(prompt: Option<String>, agent: &ManagedAgentRow) -> String {
     prompt
         .filter(|prompt| !prompt.trim().is_empty())
         .unwrap_or_else(|| format!("Start a session for {}.", agent.name))
-}
-
-async fn resolve_agent_vault_keys(
-    state: &AppState,
-    pool: &PgPool,
-    agent: &ManagedAgentRow,
-    environment: &mut Value,
-) -> Result<(), GatewayError> {
-    let key_names: Vec<String> = agent
-        .vault_keys
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str().map(str::to_owned))
-        .collect();
-    if key_names.is_empty() {
-        return Ok(());
-    }
-    let enc_key =
-        credential_crypto::encryption_key(state.config.general_settings.master_key.as_deref())?;
-    let owner_id = agent.owner_id.as_deref().unwrap_or("");
-    let env_obj = environment.as_object_mut().ok_or_else(|| {
-        GatewayError::InvalidJsonMessage("environment must be an object".to_owned())
-    })?;
-    for key_name in &key_names {
-        if let Some(encrypted) = credentials::resolve_vault_key(pool, key_name, owner_id).await? {
-            if let Ok(plaintext) = credential_crypto::decrypt_value(&encrypted, &enc_key) {
-                env_obj.insert(key_name.clone(), serde_json::Value::String(plaintext));
-            }
-        }
-    }
-    Ok(())
 }
