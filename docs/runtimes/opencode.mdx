@@ -89,3 +89,76 @@ This registers both `local-opencode` and `local-deepagents` in the UI.
 ## Configuration
 
 OpenCode runtime configuration lives in the `compose.yaml` `opencode` service block. You can override the default model and tool settings via environment variables in that block.
+
+## Sandboxed execution with OpenSandbox
+
+By default the OpenCode harness runs agent commands directly on the host container. **OpenSandbox** routes every command and file operation into an isolated container sandbox instead, so the agent cannot touch host state.
+
+When OpenSandbox is configured:
+
+- Native bash and file-edit operations are denied at the harness level.
+- A `sandbox-exec` MCP server is injected into OpenCode's tool config automatically.
+- Each session creates a fresh sandbox, executes all commands there, then terminates it.
+
+### How it works
+
+```
+opencode  →  sandbox-exec MCP server
+                 │
+                 ├─ POST /v1/sandboxes                         (create)
+                 ├─ GET  /v1/sandboxes/{id}/endpoints/44772    (resolve execd URL)
+                 ├─ POST {execd}/command                       (run command, SSE stream)
+                 ├─ GET  {execd}/files/download                (read file)
+                 ├─ POST {execd}/files/upload                  (write file)
+                 └─ DELETE /v1/sandboxes/{id}                  (terminate)
+```
+
+The harness talks to the **OpenSandbox controller** (sandbox lifecycle) and **execd** (command execution inside the sandbox) over plain HTTP. No SDK dependency — Node 20 built-ins only.
+
+### Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENSANDBOX_API_URL` | Yes | OpenSandbox controller base URL (e.g. `http://opensandbox-server.opensandbox-system.svc.cluster.local`) |
+| `OPENSANDBOX_API_KEY` | When auth enabled | API key sent as `OPEN-SANDBOX-API-KEY` header |
+| `OPENSANDBOX_IMAGE` | Yes | execd container image (e.g. `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.18`) |
+| `SANDBOX_PROVIDER` | No | Defaults to `opensandbox`. Only `opensandbox` is supported. |
+
+Set any of these on the `opencode` service and the harness enables sandbox mode automatically. If `OPENSANDBOX_API_URL` is unset, sandbox mode is skipped and commands run on the host as normal.
+
+### Local Docker Compose
+
+For local testing, point the opencode service at an external OpenSandbox instance by adding env vars to `compose.yaml`:
+
+```yaml
+opencode:
+  environment:
+    OPENSANDBOX_API_URL: http://host.docker.internal:8090
+    OPENSANDBOX_API_KEY: my-local-key
+    OPENSANDBOX_IMAGE: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.18
+```
+
+Then run as normal:
+
+```bash
+docker compose --profile opencode up
+```
+
+### Production deployment on EKS
+
+For production, deploy the full OpenSandbox Kubernetes operator alongside the opencode-anthropic-server. The stack runs:
+
+- **OpenSandbox controller** — manages sandbox lifecycle via `BatchSandbox` CRDs
+- **OpenSandbox server** — HTTP API gateway the harness calls
+- **opencode-anthropic-server** — the OpenCode harness wired to OpenSandbox
+
+Key resources:
+
+- Kubernetes namespace: `opensandbox-system`
+- Helm charts: `opensandbox-controller`, `opensandbox-server`
+- Sandbox images: `opensandbox/execd:v1.0.18`, `opensandbox/egress:v1.0.12`
+- Default sandbox resource limits: `1 CPU`, `2 GiB RAM`
+
+See the [EKS deployment guide](https://github.com/LiteLLM-Labs/litellm-agent-platform-2/blob/main/templates/opencode/docs/eks-deployment.md) for the full step-by-step: cluster setup, EBS CSI driver, OpenSandbox Helm install, ECR push, and Kubernetes manifests.
+
+Quick-start: paste the agent prompt from that guide into any coding agent and it will walk through every step, asking for credentials as needed.
