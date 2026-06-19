@@ -1,0 +1,183 @@
+name: Repo Ops Worker
+
+on:
+  repository_dispatch:
+    types:
+      - repo-ops-repo-health
+      - repo-ops-dependency-rollout
+      - repo-ops-stale-triage
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Operation name"
+        required: true
+        type: choice
+        options:
+          - repo-health
+          - dependency-rollout
+          - stale-triage
+      dry_run:
+        description: "Skip live writes"
+        required: true
+        default: true
+        type: boolean
+      requested_by:
+        description: "Operator or workflow actor"
+        required: false
+        default: "manual"
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve operation context
+        id: context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          MANUAL_OPERATION: ${{ inputs.operation }}
+          MANUAL_DRY_RUN: ${{ inputs.dry_run }}
+          MANUAL_REQUESTED_BY: ${{ inputs.requested_by }}
+          PAYLOAD_DRY_RUN: ${{ github.event.client_payload.dry_run }}
+          PAYLOAD_REQUESTED_BY: ${{ github.event.client_payload.requested_by }}
+        run: |
+          if [ "$EVENT_NAME" = "repository_dispatch" ]; then
+            echo "operation=${EVENT_ACTION#repo-ops-}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${PAYLOAD_DRY_RUN}" >> "$GITHUB_OUTPUT"
+            echo "requested_by=${PAYLOAD_REQUESTED_BY}" >> "$GITHUB_OUTPUT"
+          else
+            echo "operation=${MANUAL_OPERATION}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${MANUAL_DRY_RUN}" >> "$GITHUB_OUTPUT"
+            echo "requested_by=${MANUAL_REQUESTED_BY}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Echo intended action
+        run: |
+          echo "repo: ${{ github.repository }}"
+          echo "operation: ${{ steps.context.outputs.operation }}"
+          echo "requested_by: ${{ steps.context.outputs.requested_by }}"
+          echo "dry_run: ${{ steps.context.outputs.dry_run }}"
+      - name: Placeholder dependency rollout
+        if: ${{ steps.context.outputs.operation == 'dependency-rollout' }}
+        run: |
+          echo "Replace this step with repo-local dependency upgrade logic."
+      - name: Repo health snapshot
+        if: ${{ steps.context.outputs.operation == 'repo-health' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          root = pathlib.Path(".")
+          repo = os.getenv("GITHUB_REPOSITORY", "")
+
+          profiles = {
+              "wireai-full": {
+                  "required_files": [
+                      "README.md",
+                      "HANDOFF.md",
+                      "package.json",
+                      "mobile/AGENTS.md",
+                      "mobile/app.json",
+                      "mobile/package.json",
+                      "phase2-backend/requirements.txt",
+                  ],
+                  "package_checks": [
+                      ("package.json", ["phase2", "mobile", "web"]),
+                      ("mobile/package.json", ["start", "ios", "android", "web"]),
+                  ],
+              },
+              "wireai-mobile-only": {
+                  "required_files": [
+                      "AGENTS.md",
+                      "app.json",
+                      "package.json",
+                      "App.tsx",
+                  ],
+                  "package_checks": [
+                      ("package.json", ["start", "ios", "android", "web"]),
+                  ],
+              },
+              "lap": {
+                  "required_files": [
+                      "readme.md",
+                      "HANDOFF.md",
+                      "AGENTS.md",
+                      "CODING_STANDARDS.md",
+                      "Cargo.toml",
+                      "compose.yaml",
+                      "config.yaml.example",
+                      "docs/learn/mcp.mdx",
+                      "templates/manifest.json",
+                  ],
+                  "package_checks": [],
+              },
+              "default": {
+                  "required_files": ["README.md"],
+                  "package_checks": [],
+              },
+          }
+
+          def exists(rel):
+              return (root / rel).exists()
+
+          if exists("mobile/app.json") and exists("phase2-backend/requirements.txt"):
+              profile_name = "wireai-full"
+          elif exists("app.json") and exists("App.tsx") and not exists("mobile/app.json"):
+              profile_name = "wireai-mobile-only"
+          elif repo.endswith("/litellm-agent-control-plane") or (exists("Cargo.toml") and exists("compose.yaml")):
+              profile_name = "lap"
+          else:
+              profile_name = "default"
+
+          profile = profiles[profile_name]
+          missing_files = [rel for rel in profile["required_files"] if not exists(rel)]
+          script_errors = []
+
+          for package_path, expected_scripts in profile["package_checks"]:
+              path = root / package_path
+              if not path.exists():
+                  script_errors.append(f"{package_path}: missing package file")
+                  continue
+              try:
+                  package_data = json.loads(path.read_text())
+              except Exception as exc:
+                  script_errors.append(f"{package_path}: invalid JSON ({exc})")
+                  continue
+              scripts = package_data.get("scripts", {})
+              if not isinstance(scripts, dict):
+                  script_errors.append(f"{package_path}: scripts is not an object")
+                  continue
+              missing_scripts = [name for name in expected_scripts if name not in scripts]
+              if missing_scripts:
+                  script_errors.append(
+                      f"{package_path}: missing scripts {', '.join(missing_scripts)}"
+                  )
+
+          print(f"repo-health profile: {profile_name}")
+          if missing_files:
+              print("missing files:")
+              for rel in missing_files:
+                  print(f"- {rel}")
+          if script_errors:
+              print("script issues:")
+              for error in script_errors:
+                  print(f"- {error}")
+
+          if missing_files or script_errors:
+              sys.exit(1)
+
+          print("repo-health passed")
+          PY
+      - name: Placeholder stale triage
+        if: ${{ steps.context.outputs.operation == 'stale-triage' }}
+        run: |
+          echo "Replace this step with repo-local stale issue or PR handling."
