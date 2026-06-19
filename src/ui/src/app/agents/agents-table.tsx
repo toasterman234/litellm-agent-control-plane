@@ -522,7 +522,7 @@ function toTableRow(
     agent,
     name: String(agent.name ?? "Untitled agent"),
     description: String(agent.description ?? ""),
-    prompt: String(agent.prompt ?? agent.system ?? ""),
+    prompt: String(agent.prompt || agent.system || ""),
     runtimeId,
     runtimeName,
     runtimeProviderName: runtimeName,

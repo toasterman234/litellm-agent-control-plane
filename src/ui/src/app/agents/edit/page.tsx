@@ -259,7 +259,7 @@ function AgentEdit() {
         setForm({
           name: ag.name ?? "",
           description: ag.description ?? "",
-          prompt: ag.prompt ?? "",
+          prompt: ag.prompt || ag.system || "",
           model: ag.model ?? "",
           runtime: runtimeFromAgent(ag),
           cron: ag.cron ?? "",

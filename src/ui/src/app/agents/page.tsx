@@ -254,7 +254,7 @@ export default function AgentsPage() {
     setForm({
       name: ag.name ?? "",
       description: ag.description ?? "",
-      prompt: ag.prompt ?? "",
+      prompt: ag.prompt || ag.system || "",
       rule_ids: Array.isArray(ag.rule_ids) ? ag.rule_ids : [],
       skill_ids: Array.isArray(ag.skill_ids) ? ag.skill_ids : [],
       runtime: runtimeFromAgent(ag),

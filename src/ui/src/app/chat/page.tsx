@@ -58,7 +58,9 @@ const BUILTIN_AGENTS: Record<string, string> = {
 
 function agentPrompt(agent: Agent | null): string {
   if (!agent) return "";
-  return String(agent.prompt ?? agent.system ?? agent.system_prompt ?? "").trim();
+  // Use || not ?? — an empty-string `prompt` field must fall through to `system`
+  // (agents created via API store their text in `system`, leaving `prompt` "").
+  return String(agent.prompt || agent.system || agent.system_prompt || "").trim();
 }
 
 function shortPrompt(prompt: string): string {
