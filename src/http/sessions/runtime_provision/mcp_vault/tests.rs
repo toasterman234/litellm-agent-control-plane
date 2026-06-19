@@ -2,7 +2,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 use super::{
-    anthropic_v1_base,
+    anthropic_v1_base, is_anthropic_api,
     credential::{
         gateway_mcp_credentials, is_environment_variable_name, EnvironmentVaultCredential,
         VaultCredential,
@@ -67,6 +67,17 @@ fn normalizes_anthropic_v1_base() {
         anthropic_v1_base("https://api.anthropic.com/v1/"),
         "https://api.anthropic.com/v1"
     );
+}
+
+#[test]
+fn only_real_anthropic_api_provisions_vaults() {
+    // Real Anthropic API → vault endpoints exist.
+    assert!(is_anthropic_api("https://api.anthropic.com"));
+    assert!(is_anthropic_api("https://api.anthropic.com/v1"));
+    // cliproxy / self-hosted gateways have no /v1/vaults → must be skipped.
+    assert!(!is_anthropic_api("http://host.docker.internal:8317/v1"));
+    assert!(!is_anthropic_api("http://192.168.1.121:4000/v1"));
+    assert!(!is_anthropic_api("http://localhost:8317/v1"));
 }
 
 #[test]

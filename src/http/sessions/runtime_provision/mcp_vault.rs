@@ -27,6 +27,18 @@ pub(super) async fn vault_ids(
         return Ok(None);
     }
 
+    // MCP credential vaults are an Anthropic *hosted-sandbox* egress mechanism and
+    // only exist on the real Anthropic API (`POST /v1/vaults?beta=true`). When the
+    // agent's model is routed through a non-Anthropic gateway (e.g. cliproxy at
+    // `host.docker.internal:8317`, or a self-hosted LiteLLM box), that endpoint
+    // 404s — `Cannot POST /v1/vaults` — and the agent can never start. Local
+    // runtimes already receive the MCP credential inline as `authorization_token`
+    // (see `http/platform_mcps/mod.rs`), so the vault is redundant for them.
+    // Skip provisioning it unless we're actually talking to api.anthropic.com.
+    if !is_anthropic_api(&created.resolved.credential.api_base) {
+        return Ok(None);
+    }
+
     let mut required: Vec<VaultCredential> = gateway_mcp_credentials(state, mcp_servers)
         .into_iter()
         .map(VaultCredential::McpStaticBearer)
@@ -154,6 +166,13 @@ fn store_name(created: &CreatedRuntimeSession) -> String {
             created.agent.id
         ))
     )
+}
+
+/// True only when the credential targets the real Anthropic API. The MCP vault
+/// endpoints (`/v1/vaults`) live exclusively there; any proxy/gateway in front
+/// (cliproxy, self-hosted LiteLLM, etc.) lacks them and would 404.
+fn is_anthropic_api(api_base: &str) -> bool {
+    api_base.contains("anthropic.com")
 }
 
 fn anthropic_v1_base(api_base: &str) -> String {
