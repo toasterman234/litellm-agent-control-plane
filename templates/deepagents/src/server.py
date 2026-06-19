@@ -28,6 +28,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 DB_PATH = os.environ.get("DB_PATH", "/data/agents.db")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "anthropic:claude-sonnet-4-5")
 RUNTIME_API_KEY = os.environ.get("RUNTIME_API_KEY")
+LAP_DEFAULT_WORKSPACE = os.environ.get("LAP_DEFAULT_WORKSPACE", "").strip()
 
 
 app = FastAPI(title="Deep Agents Anthropic Managed Agents bridge")
@@ -231,6 +232,13 @@ def get_session(session_id: str) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
 
 
+def get_environment(environment_id: str | None) -> sqlite3.Row | None:
+    if not environment_id:
+        return None
+    with db() as conn:
+        return conn.execute("SELECT * FROM environments WHERE id = ?", (environment_id,)).fetchone()
+
+
 def append_event(session_id: str, event: str, data: dict[str, Any]) -> dict[str, Any]:
     with db() as conn:
         cursor = conn.execute(
@@ -381,6 +389,28 @@ def normalize_model_for_deepagents(model: str) -> str:
     return model
 
 
+def build_model_for_deepagents(model: str):
+    """Return the model spec passed to create_deep_agent.
+
+    For the openai:* provider we build ChatOpenAI explicitly with
+    use_responses_api=False so requests hit /v1/chat/completions. LAP only
+    serves chat completions; langchain-openai>=1.3 otherwise defaults to the
+    Responses API (/v1/responses), which LAP answers with 404. Other providers
+    fall through to init_chat_model via the normalized string.
+    """
+    normalized = normalize_model_for_deepagents(model)
+    if normalized.startswith("openai:"):
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=normalized.split(":", 1)[1],
+            base_url=os.environ.get("OPENAI_BASE_URL") or None,
+            api_key=os.environ.get("OPENAI_API_KEY") or None,
+            use_responses_api=False,
+        )
+    return normalized
+
+
 def clip(text: Any, limit: int = 20_000) -> str:
     value = text if isinstance(text, str) else json_dumps(text)
     if len(value) <= limit:
@@ -388,7 +418,70 @@ def clip(text: Any, limit: int = 20_000) -> str:
     return value[:limit] + f"\n... truncated {len(value) - limit} chars"
 
 
-def runtime_tools() -> list[Any]:
+def workspace_root_from_config(config: Any) -> Path | None:
+    if not isinstance(config, dict):
+        return None
+    candidates = [
+        config.get("workspace_path"),
+        config.get("workspacePath"),
+        config.get("workdir"),
+        config.get("cwd"),
+        config.get("root_dir"),
+        config.get("rootDir"),
+        config.get("path"),
+    ]
+    workspace = config.get("workspace")
+    if isinstance(workspace, dict):
+        candidates.extend(
+            [
+                workspace.get("path"),
+                workspace.get("root"),
+                workspace.get("root_dir"),
+            ]
+        )
+    source = config.get("source")
+    if isinstance(source, dict):
+        candidates.extend(
+            [
+                source.get("path"),
+                source.get("root"),
+                source.get("root_dir"),
+            ]
+        )
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        value = candidate.strip()
+        if not value:
+            continue
+        root = Path(value).expanduser()
+        if root.is_dir():
+            return root
+    return None
+
+
+def session_workspace_root(session_row: sqlite3.Row) -> Path | None:
+    environment_row = get_environment(session_row["environment_id"])
+    if environment_row:
+        config = parse_json(environment_row["config"], {})
+        root = workspace_root_from_config(config)
+        if root is not None:
+            return root
+    if LAP_DEFAULT_WORKSPACE:
+        root = Path(LAP_DEFAULT_WORKSPACE).expanduser()
+        if root.is_dir():
+            return root
+    return None
+
+
+def resolve_workspace_path(root_dir: Path, path: str) -> Path:
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = root_dir / target
+    return target
+
+
+def runtime_tools(root_dir: Path) -> list[Any]:
     if tool is None:
         return []
 
@@ -403,6 +496,7 @@ def runtime_tools() -> list[Any]:
                 text=True,
                 capture_output=True,
                 timeout=timeout,
+                cwd=root_dir,
             )
             return clip(
                 {
@@ -423,7 +517,7 @@ def runtime_tools() -> list[Any]:
     @tool
     def ls(path: str = ".") -> str:
         """List files and directories at a path."""
-        target = Path(path).expanduser()
+        target = resolve_workspace_path(root_dir, path)
         try:
             items = sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name))[:200]
             return clip(
@@ -442,14 +536,14 @@ def runtime_tools() -> list[Any]:
     @tool
     def glob(pattern: str, root: str = ".") -> str:
         """Find paths matching a glob pattern under a root directory."""
-        matches = globlib.glob(str(Path(root) / pattern), recursive=True)
+        matches = globlib.glob(str(resolve_workspace_path(root_dir, root) / pattern), recursive=True)
         return clip(sorted(matches)[:500])
 
     @tool
     def grep(pattern: str, root: str = ".", include: str = "*") -> str:
         """Search text files for a pattern and return matching lines."""
         matches: list[dict[str, Any]] = []
-        paths = globlib.glob(str(Path(root) / "**" / include), recursive=True)
+        paths = globlib.glob(str(resolve_workspace_path(root_dir, root) / "**" / include), recursive=True)
         for path in paths[:2_000]:
             file_path = Path(path)
             if not file_path.is_file():
@@ -470,7 +564,7 @@ def runtime_tools() -> list[Any]:
         """Read a text file."""
         limit = max(1, min(int(max_bytes or 20_000), 100_000))
         try:
-            return Path(path).read_text(errors="ignore")[:limit]
+            return resolve_workspace_path(root_dir, path).read_text(errors="ignore")[:limit]
         except Exception as exc:
             return f"read failed: {exc}"
 
@@ -478,7 +572,7 @@ def runtime_tools() -> list[Any]:
     def write(path: str, content: str) -> str:
         """Create or overwrite a text file."""
         try:
-            target = Path(path)
+            target = resolve_workspace_path(root_dir, path)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
             return f"wrote {len(content)} chars to {path}"
@@ -489,7 +583,7 @@ def runtime_tools() -> list[Any]:
     def edit(path: str, old: str, new: str) -> str:
         """Replace text in a file."""
         try:
-            target = Path(path)
+            target = resolve_workspace_path(root_dir, path)
             text = target.read_text(errors="ignore")
             if old not in text:
                 return "edit failed: old text not found"
@@ -522,13 +616,24 @@ def final_text_from_result(result: Any) -> str:
     return ""
 
 
-def build_agent(row: sqlite3.Row):
+def build_agent(session_row: sqlite3.Row, row: sqlite3.Row):
     if create_deep_agent is None:
         raise RuntimeError("deepagents package is not importable")
+    workspace_root = session_workspace_root(session_row)
+    workspace_hint = str(workspace_root) if workspace_root is not None else "."
+    system_prompt = row["system"] or "You are a helpful assistant."
+    system_prompt = (
+        f"{system_prompt}\n\n"
+        "Workspace instruction policy:\n"
+        f"- The primary workspace root is `{workspace_hint}`.\n"
+        "- Treat `AGENTS.md`, `CLAUDE.md`, `CODING_STANDARDS.md`, and files under `.agent/rules/` as authoritative workspace rules.\n"
+        "- Treat `.agent/skills/` and `skills/` as skills, not rules.\n"
+        "- Before claiming the workspace has no rules, inspect `AGENTS.md` and any nearer scoped instruction files first."
+    )
     return create_deep_agent(
-        model=normalize_model_for_deepagents(row["model"] or DEFAULT_MODEL),
-        tools=runtime_tools(),
-        system_prompt=row["system"] or "You are a helpful assistant.",
+        model=build_model_for_deepagents(row["model"] or DEFAULT_MODEL),
+        tools=runtime_tools(workspace_root or Path(".")),
+        system_prompt=system_prompt,
     )
 
 
@@ -549,7 +654,7 @@ def run_agent(session_id: str, prompt: str) -> None:
         seen_tools: set[str] = set()
         seen_results: set[str] = set()
         try:
-            agent = build_agent(agent_row)
+            agent = build_agent(session, agent_row)
             payload = {"messages": [{"role": "user", "content": prompt}]}
             for chunk in agent.stream(payload, stream_mode="updates"):
                 for message in messages_from_update(chunk):

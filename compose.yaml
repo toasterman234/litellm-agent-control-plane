@@ -9,17 +9,10 @@ x-runtime-registration: &runtime-registration
     - -c
     - |
       set -eu
-
-      until curl -fsS "$$LAP_URL/health" >/dev/null; do
-        sleep 1
-      done
-      until curl -fsS "$$RUNTIME_API_BASE/health" >/dev/null; do
-        sleep 1
-      done
-
+      until curl -fsS "$$LAP_URL/health" >/dev/null; do sleep 1; done
+      until curl -fsS "$$RUNTIME_API_BASE/health" >/dev/null; do sleep 1; done
       create_payload=$$(printf '{"alias":"%s","api_spec":"%s","api_base":"%s","api_key":"%s"}' "$$RUNTIME_ALIAS" "$$RUNTIME_API_SPEC" "$$RUNTIME_API_BASE" "$$RUNTIME_API_KEY")
       update_payload=$$(printf '{"api_base":"%s","api_key":"%s"}' "$$RUNTIME_API_BASE" "$$RUNTIME_API_KEY")
-
       curl -fsS -X POST "$$LAP_URL/api/runtime-harnesses" \
         -H "Authorization: Bearer $$LAP_MASTER_KEY" \
         -H "Content-Type: application/json" \
@@ -32,6 +25,7 @@ x-runtime-registration: &runtime-registration
 services:
   postgres:
     image: postgres:16-alpine
+    restart: always
     environment:
       POSTGRES_USER: lap
       POSTGRES_PASSWORD: lap
@@ -48,30 +42,50 @@ services:
 
   lap:
     build: .
+    restart: always
     ports:
       - "4000:4000"
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local}
       DATABASE_URL: postgres://lap:lap@postgres:5432/litellm_agents
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LITELLM_CONFIG: /app/config.yaml
+      EXA_API_KEY: ${EXA_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      MISTRAL_VIBE_API_KEY: ${MISTRAL_VIBE_API_KEY}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY}
+    volumes:
+      - ./config.yaml:/app/config.yaml
     depends_on:
       postgres:
         condition: service_healthy
 
   opencode:
     profiles: ["opencode"]
+    restart: always
     build: ./templates/opencode
     environment:
-      LITELLM_BASE_URL: http://lap:4000/v1
-      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
-      LITELLM_MODELS: ${OPENCODE_MODELS:-}
+      # opencode uses its own authenticated OpenCode Go subscription (auth.json
+      # mounted below), NOT cliproxy/LAP. OPENCODE_PROVIDER_ID takes precedence
+      # for model listing + bare-model normalization. Do NOT set LITELLM_* here
+      # or it will fall back to cliproxy and stop using the subscription.
+      OPENCODE_PROVIDER_ID: ${OPENCODE_PROVIDER_ID:-opencode-go}
+      OPENCODE_BASE_CONFIG_PATH: ${OPENCODE_BASE_CONFIG_PATH:-}
+      OPENCODE_MEMORY_PLUGIN_CONFIG_PATH: ${OPENCODE_MEMORY_PLUGIN_CONFIG_PATH:-}
+      RUNTIME_API_KEY: ${OPENCODE_RUNTIME_API_KEY:-local-opencode-key}
+      LAP_DEFAULT_WORKSPACE: /workspace/lap
     volumes:
       - opencode-data:/data
+      - .:/workspace/lap
+      - ${OPENCODE_AUTH_JSON_PATH:-/Users/bencharney/.local/share/opencode/auth.json}:/root/.local/share/opencode/auth.json:ro
     depends_on:
       - lap
 
   register-opencode:
     <<: *runtime-registration
+    # one-shot register-then-exit job; must not restart-loop (it exits 0)
+    restart: "no"
     profiles: ["opencode"]
     environment:
       LAP_URL: http://lap:4000
@@ -86,18 +100,28 @@ services:
 
   deepagents:
     profiles: ["deepagents"]
+    restart: always
     build: ./templates/deepagents
     environment:
-      DEFAULT_MODEL: ${DEEPAGENTS_MODEL:-anthropic:claude-sonnet-4-5}
+      # Route LLM calls through LAP (config.yaml is the single source of model
+      # routing). deepagents normalizes openai/<m> -> openai:<m> and the
+      # LangChain OpenAI client reads OPENAI_BASE_URL / OPENAI_API_KEY.
+      # Model name must be one LAP resolves to a working upstream (see config.yaml).
+      DEFAULT_MODEL: ${DEEPAGENTS_MODEL:-openai/claude-sonnet-4-6}
       RUNTIME_API_KEY: ${DEEPAGENTS_RUNTIME_API_KEY:-local-deepagents-key}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_BASE_URL: http://lap:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
+      LAP_DEFAULT_WORKSPACE: /workspace/lap
     volumes:
       - deepagents-data:/data
+      - .:/workspace/lap
     depends_on:
       - lap
 
   register-deepagents:
     <<: *runtime-registration
+    # one-shot register-then-exit job; must not restart-loop (it exits 0)
+    restart: "no"
     profiles: ["deepagents"]
     environment:
       LAP_URL: http://lap:4000
@@ -110,65 +134,53 @@ services:
       - lap
       - deepagents
 
-  hermes:
-    profiles: ["hermes"]
-    build: ./templates/hermes
+  pydantic-deepagents:
+    profiles: ["pydantic-deepagents"]
+    restart: always
+    build: ./templates/pydantic-deepagents
     environment:
-      DEFAULT_MODEL: ${HERMES_MODEL:-anthropic/claude-sonnet-4-5}
-      RUNTIME_API_KEY: ${HERMES_RUNTIME_API_KEY:-local-hermes-key}
-      LAP_BASE_URL: http://lap:4000
-      LAP_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
-    volumes:
-      - hermes-data:/data
-    depends_on:
-      - lap
-
-  register-hermes:
-    <<: *runtime-registration
-    profiles: ["hermes"]
-    environment:
-      LAP_URL: http://lap:4000
-      LAP_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local}
-      RUNTIME_ALIAS: local-hermes
-      RUNTIME_API_SPEC: claude_managed_agents
-      RUNTIME_API_BASE: http://hermes:8080
-      RUNTIME_API_KEY: ${HERMES_RUNTIME_API_KEY:-local-hermes-key}
-    depends_on:
-      - lap
-      - hermes
-
-  openclaw:
-    profiles: ["openclaw"]
-    build: ./templates/openclaw
-    environment:
+      # Route LLM calls through LAP (config.yaml is the single source of model
+      # routing). pydantic-ai mirrors LITELLM_BASE_URL onto the OpenAI provider;
+      # a bare model name normalizes to openai:<model> and is sent to LAP, which
+      # resolves it to a working upstream (see config.yaml).
+      DEFAULT_MODEL: ${PYDANTIC_DEEPAGENTS_MODEL:-claude-sonnet-4-6}
+      RUNTIME_API_KEY: ${PYDANTIC_DEEPAGENTS_RUNTIME_API_KEY:-local-pydantic-deepagents-key}
       LITELLM_BASE_URL: http://lap:4000/v1
       LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
-      LITELLM_MODELS: ${OPENCLAW_MODELS:-claude-sonnet-4-6}
-      OPENCLAW_AGENT_MODEL: ${OPENCLAW_AGENT_MODEL:-litellm/claude-sonnet-4-6}
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-local-openclaw-token}
-      RUNTIME_API_KEY: ${OPENCLAW_RUNTIME_API_KEY:-local-openclaw-key}
+      OPENAI_BASE_URL: http://lap:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY:-sk-local}
+      DOCKER_SANDBOX_MODELS_URL: http://lap:4000/v1/models
+      PYDANTIC_DEEP_MAX_NESTING_DEPTH: ${PYDANTIC_DEEP_MAX_NESTING_DEPTH:-3}
+      PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS: ${PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS:-50}
+      PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS: ${PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS:-100000}
+      PYDANTIC_DEEP_MONTY: ${PYDANTIC_DEEP_MONTY:-true}
+      PYDANTIC_AI_SANDBOX_EXEC: "false"
+      LAP_DEFAULT_WORKSPACE: /workspace/lap
+      PYDANTIC_DEEP_DEFAULT_WORKSPACE: /workspace/lap
     volumes:
-      - openclaw-data:/data
+      - pydantic-deepagents-data:/data
+      - .:/workspace/lap
     depends_on:
       - lap
 
-  register-openclaw:
+  register-pydantic-deepagents:
     <<: *runtime-registration
-    profiles: ["openclaw"]
+    # one-shot register-then-exit job; must not restart-loop (it exits 0)
+    restart: "no"
+    profiles: ["pydantic-deepagents"]
     environment:
       LAP_URL: http://lap:4000
       LAP_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local}
-      RUNTIME_ALIAS: local-openclaw
+      RUNTIME_ALIAS: local-pydantic-deepagents
       RUNTIME_API_SPEC: claude_managed_agents
-      RUNTIME_API_BASE: http://openclaw:8080
-      RUNTIME_API_KEY: ${OPENCLAW_RUNTIME_API_KEY:-local-openclaw-key}
+      RUNTIME_API_BASE: http://pydantic-deepagents:8080
+      RUNTIME_API_KEY: ${PYDANTIC_DEEPAGENTS_RUNTIME_API_KEY:-local-pydantic-deepagents-key}
     depends_on:
       - lap
-      - openclaw
+      - pydantic-deepagents
 
 volumes:
   postgres-data:
   opencode-data:
   deepagents-data:
-  hermes-data:
-  openclaw-data:
+  pydantic-deepagents-data:
