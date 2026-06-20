@@ -154,12 +154,23 @@ services:
       PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS: ${PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS:-50}
       PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS: ${PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS:-100000}
       PYDANTIC_DEEP_MONTY: ${PYDANTIC_DEEP_MONTY:-true}
+      # Ben shared-brain memory (python-memory-api on the host) + identity. Makes
+      # this runtime a "ben-agent": it remembers across sessions via the SAME
+      # mem0/redis/qdrant brain the governed pi/ben-agents use, and knows who Ben
+      # is + how he wants to be talked to. Token defaults live in server.py.
+      PYDANTIC_DEEP_BEN_MEMORY: ${PYDANTIC_DEEP_BEN_MEMORY:-true}
+      PYDANTIC_DEEP_BEN_IDENTITY: ${PYDANTIC_DEEP_BEN_IDENTITY:-true}
+      BEN_MEMORY_API_URL: ${BEN_MEMORY_API_URL:-http://host.docker.internal:8010}
+      # OB1 knowledge graph via the scoped open-brain MCP key (kept in .env, gitignored).
+      PYDANTIC_DEEP_BEN_BRAIN: ${PYDANTIC_DEEP_BEN_BRAIN:-true}
+      OB1_BRAIN_KEY: ${OB1_BRAIN_KEY:-}
       PYDANTIC_AI_SANDBOX_EXEC: "false"
       LAP_DEFAULT_WORKSPACE: /workspace/lap
       PYDANTIC_DEEP_DEFAULT_WORKSPACE: /workspace/lap
     volumes:
       - pydantic-deepagents-data:/data
       - .:/workspace/lap
+      - /Volumes/Extra Storage Crucial 1TB SSD/Projects/Infrastructure/obsidian-vault/Vault-v2:/workspace/obsidian-vault:ro
     depends_on:
       - lap
 

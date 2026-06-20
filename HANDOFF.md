@@ -1,3 +1,85 @@
+# LAP Handoff — 2026-06-20 — pydantic-deepagents is now a "ben-agent"
+
+## Session Summary
+Made the `pydantic-deepagents` runtime a **ben-agent** (ungoverned by design):
+shared cross-session memory, knowledge of who Ben is, and Ben-specific skills.
+All changes are in `templates/pydantic-deepagents/src/server.py` + `compose.yaml`
++ a new `skills/` layout. Verified end-to-end with real agent runs.
+
+### Why the obvious paths were dead ends
+- **LAP Rules can't reach this runtime.** The model door (`/v1/chat/completions`)
+  ignores `rule_ids` (central-repo-ops ADR-0004); rule injection only happens on
+  LAP's agent-run path. So identity/memory had to ride in the runtime's OWN
+  system prompt + tools, not via LAP.
+- **The platform `agent_memory` MCP tool does not attach here** (only opencode has
+  it, and opencode is broken). The runtime's built-in prompt told the agent to use
+  it anyway — a dead instruction. Replaced with direct tools.
+
+### What was built
+1. **Shared memory** — `ben_memory_search` / `ben_memory_save` tools (explicit
+   `name=` on `pydantic_ai.Tool`) hitting **python-memory-api at
+   `http://host.docker.internal:8010`** — the SAME mem0/redis/qdrant brain
+   (namespace `pi-agent-default`) the governed pi/ben-agents use. Auth = `Bearer`
+   read/write tokens (`pi-local-dev-read` / `-write`). Gated by
+   `PYDANTIC_DEEP_BEN_MEMORY` (default true). stdlib urllib only.
+2. **Identity** — `BEN_IDENTITY_PROMPT` (who Ben is + how he wants to be talked to,
+   from his global CLAUDE.md) appended to instructions, gated by
+   `PYDANTIC_DEEP_BEN_IDENTITY`. The "Persistent memory policy" block was rewritten
+   to point at the new tools and note the platform MCP tools are not attached.
+3. **OB1 knowledge graph** — injected globally as a native MCP toolset
+   (`_global_mcp_servers()` → `build_mcp_toolsets`): `open_brain` = the hosted
+   `open-brain-mcp` Supabase Edge Function via the SCOPED `x-brain-key` (NOT the
+   high-blast-radius service-role JWT). Gated by `PYDANTIC_DEEP_BEN_BRAIN` +
+   presence of `OB1_BRAIN_KEY` (in `.env`, gitignored).
+4. **Skills** — `skills/memory-hygiene/SKILL.md` + `skills/reuse-recon/SKILL.md`
+   (agentskills.io layout). Wired `skill_directories=[{"path": BEN_SKILLS_DIR}]`
+   (default `/workspace/lap/skills`) into `create_deep_agent`.
+
+### GOTCHAS (don't relearn)
+- **`include_skills=True` discovers NOTHING without `skill_directories`.** The
+  server never passed it, so even the old flat `skills/*.md` LAP files never
+  loaded. Also those flat files are NOT agentskills — the loader needs the
+  `<dir>/<skill-name>/SKILL.md` subdir layout (`**/SKILL.md`).
+- **Rebuild for code, not for content.** The app runs from the IMAGE, so any
+  `server.py`/`compose.yaml` edit needs `docker compose --profile
+  pydantic-deepagents build pydantic-deepagents && ... up -d`. But `skills/` and
+  the repo are bind-mounted (`.:/workspace/lap`), so adding/editing a SKILL.md
+  needs NO rebuild.
+- **Drive the runtime via `docker exec -i` (not published to host; LAP fronts
+  it).** API: `POST /v1/agents {name,model,system}` → `POST /v1/sessions {agent}`
+  → `POST /v1/sessions/{id}/events {events:[{type:"user.message",content}]}` →
+  `GET /v1/sessions/{id}/events` (`{data:[...]}`, with `agent.tool_use` /
+  `agent.tool_result` / `agent.message`). Auth header `x-api-key:
+  local-pydantic-deepagents-key`. Omitting `-i` on `docker exec ... python3 -`
+  silently runs nothing.
+
+### Verification (all real, not just implemented)
+- `scripts/verify-runtimes.sh` → all green.
+- Memory: a real run called `ben_memory_search` and recalled a just-saved marker
+  verbatim; an independent run pulled governed-agent knowledge nobody planted (a
+  June-16 VRP scan card + run id) → genuinely shared brain, not an island.
+- OB1: the toolset attaches and a real run CALLED `search` — but OB1 returned
+  `different vector dimensions 1536 and 1024`.
+- Skills: a real run called `list_skills` (saw both) + `load_skill` (read
+  reuse-recon).
+
+### OPEN — OB1 semantic search is broken at the source (not our wiring)
+The hosted `open-brain-mcp` embeds queries at 1536-dim while the graph is
+1024-dim (bge-m3), so `search`/`search_thoughts` error for ALL cloud/MCP
+consumers (ChatGPT, Claude's open-brain MCP, this agent); only
+`list_thoughts`/`fetch` work. Tracked in Ben's task store as
+`task-20260620124815-fix-ob1-semantic`. Fix = re-embed the graph with a 1024-dim
+CLOUD model the Edge Function can call (separate project).
+
+### Files changed this session
+`templates/pydantic-deepagents/src/server.py`, `compose.yaml`, new
+`skills/memory-hygiene/SKILL.md` + `skills/reuse-recon/SKILL.md`, `.env`
+(gitignored — added `OB1_BRAIN_KEY`). Toggle env knobs:
+`PYDANTIC_DEEP_BEN_MEMORY` / `_BEN_IDENTITY` / `_BEN_BRAIN`, `BEN_MEMORY_API_URL`,
+`PYDANTIC_DEEP_BEN_SKILLS_DIR`.
+
+---
+
 # LAP Handoff — 2026-06-19
 
 ## Session Summary

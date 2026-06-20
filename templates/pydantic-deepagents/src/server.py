@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import io
 import inspect
 import json
 import os
@@ -66,12 +68,122 @@ async def _monty_run(code: str) -> str:
     Returns:
         The stdout output of the executed code.
     """
-    result = _Monty().run(code)  # type: ignore[union-attr]
-    output = getattr(result, "output", str(result))
-    return str(output)
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        result = _Monty(code).run()  # type: ignore[union-attr]
+    output = stdout.getvalue()
+    if output:
+        return output
+    if result is None:
+        return ""
+    return str(getattr(result, "output", result))
 
 
 _monty_tool = _PydanticTool(_monty_run)
+
+
+def _ben_memory_search(query: str) -> str:
+    """Search Ben's durable cross-session memory (the shared pi/ben-agents brain).
+
+    Use this BEFORE answering anything that depends on prior decisions,
+    preferences, named projects, past work, or "what we said earlier". It reads
+    the same memory the governed ben-agents write to, so it sees Ben's real
+    operational history.
+
+    Args:
+        query: A short natural-language description of what to recall.
+
+    Returns:
+        The most relevant remembered items, or a note that nothing was found.
+    """
+    from urllib.parse import urlencode
+
+    if not query or not query.strip():
+        return "memory search skipped: empty query"
+    url = f"{BEN_MEMORY_API_URL}/memory/search?" + urlencode({"q": query.strip()})
+    req = UrlRequest(url, headers={"Authorization": f"Bearer {BEN_MEMORY_TOKEN_READ}"})
+    try:
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except URLError as exc:
+        return f"memory search unavailable ({exc}); answer without durable memory and say so."
+    except Exception as exc:  # noqa: BLE001 - tool must never raise into the agent
+        return f"memory search error ({exc}); answer without durable memory and say so."
+    items = data.get("items") or []
+    if not items:
+        return f"No durable memory found for: {query}"
+    out = [f"Found {len(items)} memory item(s) for '{query}' (showing up to {BEN_MEMORY_SEARCH_LIMIT}):"]
+    for item in items[:BEN_MEMORY_SEARCH_LIMIT]:
+        content = (item.get("content") or "").strip().replace("\n", " ")
+        if len(content) > 600:
+            content = content[:600] + "…"
+        ts = item.get("ts", "")
+        tags = ", ".join(item.get("tags") or [])
+        out.append(f"- [{ts}]{(' {'+tags+'}') if tags else ''} {content}")
+    return "\n".join(out)
+
+
+def _ben_memory_save(content: str, tags: list[str] | None = None) -> str:
+    """Save a durable memory to Ben's shared cross-session brain.
+
+    Use this to persist a decision, preference, fact, or outcome that future
+    sessions (and the other ben-agents) should remember. Keep each memory to one
+    self-contained fact. Do NOT save transient chatter or secrets.
+
+    Args:
+        content: The fact to remember, written so it stands on its own.
+        tags: Optional short tags to aid later recall (e.g. ["lap", "decision"]).
+
+    Returns:
+        Confirmation that the memory was saved, or an error note.
+    """
+    if not content or not content.strip():
+        return "memory save skipped: empty content"
+    body = json.dumps({"content": content.strip(), "tags": tags or []}).encode("utf-8")
+    req = UrlRequest(
+        f"{BEN_MEMORY_API_URL}/memory",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {BEN_MEMORY_TOKEN_WRITE}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urlopen(req, timeout=10) as resp:
+            resp.read()
+    except URLError as exc:
+        return f"memory save failed ({exc}); the fact was NOT persisted."
+    except Exception as exc:  # noqa: BLE001 - tool must never raise into the agent
+        return f"memory save error ({exc}); the fact was NOT persisted."
+    return f"Saved to durable memory: {content.strip()[:120]}"
+
+
+_ben_memory_search_tool = _PydanticTool(_ben_memory_search, name="ben_memory_search")
+_ben_memory_save_tool = _PydanticTool(_ben_memory_save, name="ben_memory_save")
+
+
+# Who this runtime serves. Injected into every agent's instructions (gated by
+# PYDANTIC_DEEP_BEN_IDENTITY) so agents on Ben's machine know who they're for and
+# how he wants to be communicated with. Sourced from Ben's global CLAUDE.md.
+BEN_IDENTITY_PROMPT = """
+Who you serve — Ben:
+- You run on Ben's own machine and serve Ben (Memphis TN, US Central Time). Ben
+  builds AI agent systems and a quant options-trading pipeline. He does NOT write
+  code or run git himself — you do all of that end-to-end; never ask him to commit
+  or run commands "first".
+- How Ben wants you to talk: lead with the answer or recommendation in ONE plain
+  sentence. Keep it short. Use plain words, not insider jargon (if a term is
+  needed, define it in a few words). Use a few bullets, not dense paragraphs.
+  Offer "want the longer version?" instead of dumping detail up front.
+- How Ben works: before building something new, first check whether a reusable
+  part already exists and recommend reuse/extend over build-new (his biggest
+  time-sink is the rewrite cycle). Don't claim something is done/verified without
+  a real check. Prefer reactive fixes that close to a verified outcome over
+  passive monitoring or reports nobody reads.
+- Visuals: flow direction is always top-down (intake at top, outcomes at bottom),
+  and label boxes with the real file/folder names so Ben recognizes his own setup.
+""".strip()
 
 DEFAULT_META_AGENT_PROMPT = """
 You are the primary meta agent for this workspace. Your job is to understand the goal, decompose it into the right level of detail, decide whether to solve it directly or delegate it, and drive the work to a clean outcome.
@@ -131,6 +243,35 @@ PYDANTIC_DEEP_MAX_NESTING_DEPTH = int(os.environ.get("PYDANTIC_DEEP_MAX_NESTING_
 PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS = int(os.environ.get("PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS", "0")) or None
 PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS = int(os.environ.get("PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS", "0")) or None
 PYDANTIC_DEEP_MONTY = os.environ.get("PYDANTIC_DEEP_MONTY", "").strip().lower() in ("1", "true", "yes")
+
+# --- Ben shared-brain memory (mem0/redis/qdrant via python-memory-api :8010) ---
+# Wires this runtime into the SAME durable memory the governed pi/ben-agents3
+# agents use (namespace pi-agent-default), so it actually remembers across
+# sessions instead of only within one chat. The platform `agent_memory` MCP tool
+# does NOT attach on this runtime, so these direct tools are the working path.
+BEN_MEMORY_API_URL = os.environ.get(
+    "BEN_MEMORY_API_URL", "http://host.docker.internal:8010"
+).strip().rstrip("/")
+BEN_MEMORY_TOKEN_READ = os.environ.get("BEN_MEMORY_TOKEN_READ", "pi-local-dev-read").strip()
+BEN_MEMORY_TOKEN_WRITE = os.environ.get("BEN_MEMORY_TOKEN_WRITE", "pi-local-dev-write").strip()
+BEN_MEMORY_SEARCH_LIMIT = int(os.environ.get("BEN_MEMORY_SEARCH_LIMIT", "6"))
+
+# --- OB1 knowledge graph (open-brain MCP, embeds + vector-searches server-side) ---
+# Ben's durable knowledge graph (projects, entities, decisions). Wired as a
+# native MCP toolset via the SCOPED brain-key (NOT the high-blast-radius
+# service-role key), so the agent gets open-brain search/fetch/capture tools.
+# Injected globally only when OB1_BRAIN_KEY is provided (it never ships in code).
+BEN_BRAIN_URL = os.environ.get(
+    "BEN_BRAIN_URL",
+    "https://bzcprnfhdlhyaszwmzxw.supabase.co/functions/v1/open-brain-mcp",
+).strip()
+BEN_BRAIN_KEY = os.environ.get("OB1_BRAIN_KEY", "").strip()
+
+# Skill folders (agentskills.io layout: <dir>/<skill-name>/SKILL.md) the agent
+# can discover. Default = the mounted lap repo's skills/ dir. create_deep_agent
+# enables the skills TOOLSET via include_skills but discovers nothing unless it
+# is told which directories to scan — so we pass this explicitly.
+BEN_SKILLS_DIR = os.environ.get("PYDANTIC_DEEP_BEN_SKILLS_DIR", "/workspace/lap/skills").strip()
 
 if LITELLM_BASE_URL and LITELLM_API_KEY and LITELLM_API_FORMAT != "anthropic":
     openai_base = os.environ.get("LITELLM_OPENAI_BASE_URL", "").strip().rstrip("/")
@@ -879,6 +1020,22 @@ def workspace_root_from_config(config: Any) -> Path | None:
     return None
 
 
+def environment_env_vars(config: Any) -> dict[str, str]:
+    if not isinstance(config, dict):
+        return {}
+    env_vars = config.get("env_vars")
+    if not isinstance(env_vars, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in env_vars.items():
+        if not isinstance(key, str) or not key:
+            continue
+        if not isinstance(value, str):
+            continue
+        out[key] = value
+    return out
+
+
 def session_backend_root(session_row: sqlite3.Row, session_id: str) -> Path:
     environment_row = get_environment(session_row["environment_id"])
     if environment_row:
@@ -931,11 +1088,26 @@ def mcp_mapping(raw_servers: Any) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _global_mcp_servers() -> dict[str, Any]:
+    """MCP servers injected into every agent on this runtime (Ben-wide)."""
+    servers: dict[str, Any] = {}
+    if bool_env("PYDANTIC_DEEP_BEN_BRAIN", True) and BEN_BRAIN_URL and BEN_BRAIN_KEY:
+        servers["open_brain"] = {
+            "type": "http",
+            "url": BEN_BRAIN_URL,
+            "headers": {"x-brain-key": BEN_BRAIN_KEY},
+        }
+    return servers
+
+
 def build_mcp_toolsets(row: sqlite3.Row) -> list[Any]:
     if parse_mcp_servers is None or build_mcp_server is None:
         return []
     raw = parse_json(row["mcp_servers"], [])
-    configs = parse_mcp_servers(mcp_mapping(raw))
+    mapping = mcp_mapping(raw)
+    for name, server in _global_mcp_servers().items():
+        mapping.setdefault(name, server)
+    configs = parse_mcp_servers(mapping)
     toolsets = []
     for config in configs:
         try:
@@ -978,11 +1150,16 @@ def build_agent(row: sqlite3.Row, backend: Any, session_id: str) -> tuple[Any, l
     extra_tools: list[Any] = []
     if PYDANTIC_DEEP_MONTY and _Monty is not None:
         extra_tools.append(_monty_tool)
+    if bool_env("PYDANTIC_DEEP_BEN_MEMORY", True):
+        extra_tools.append(_ben_memory_search_tool)
+        extra_tools.append(_ben_memory_save_tool)
     base_instructions = (row["system"] or "").strip()
     if base_instructions:
         instructions = f"{base_instructions}\n\n{DEFAULT_META_AGENT_PROMPT}"
     else:
         instructions = DEFAULT_META_AGENT_PROMPT
+    if bool_env("PYDANTIC_DEEP_BEN_IDENTITY", True):
+        instructions = f"{instructions}\n\n{BEN_IDENTITY_PROMPT}"
     instructions = (
         f"{instructions}\n\n"
         "Workspace instruction policy:\n"
@@ -991,9 +1168,11 @@ def build_agent(row: sqlite3.Row, backend: Any, session_id: str) -> tuple[Any, l
         "- Distinguish skills from rules. Skills are optional procedures or capabilities; workspace rule files are governing instructions.\n"
         "- Before claiming the workspace has no rules, inspect `AGENTS.md` and any nearer scoped instruction files first.\n\n"
         "Persistent memory policy:\n"
-        "- Use the platform `agent_memory` MCP tool for cross-session memory when it is available.\n"
-        "- Use the platform `read_platform_session` MCP tool when you need prior LAP chat history.\n"
-        "- For requests that depend on prior context, check session history and durable memory before answering from scratch.\n"
+        "- Your durable cross-session memory is the `ben_memory_search` and `ben_memory_save` tools (Ben's shared brain — the same memory the other ben-agents use). Prefer these.\n"
+        "- For any request that depends on prior context, decisions, preferences, named projects, or 'what we said earlier', call `ben_memory_search` BEFORE answering from scratch. Say when you are using recalled memory.\n"
+        "- When a durable decision, preference, fact, or outcome is established that future sessions should know, call `ben_memory_save` (one self-contained fact per save; never save secrets).\n"
+        "- For deeper background — Ben's projects, named entities, and past decisions — also use the `open_brain` MCP tools (search/fetch) when available; that is his knowledge graph (OB1).\n"
+        "- The platform `agent_memory`/`read_platform_session` MCP tools are NOT attached on this runtime — do not rely on them.\n"
         "- Do not rely on filesystem-based memory files unless the user explicitly asks for that path."
     )
     agent = create_deep_agent(
@@ -1006,6 +1185,11 @@ def build_agent(row: sqlite3.Row, backend: Any, session_id: str) -> tuple[Any, l
         include_filesystem=bool_env("PYDANTIC_DEEP_FILESYSTEM", True),
         include_subagents=bool_env("PYDANTIC_DEEP_SUBAGENTS", True),
         include_skills=bool_env("PYDANTIC_DEEP_SKILLS", True),
+        skill_directories=(
+            [{"path": BEN_SKILLS_DIR}]
+            if BEN_SKILLS_DIR and os.path.isdir(BEN_SKILLS_DIR)
+            else None
+        ),
         include_builtin_subagents=bool_env("PYDANTIC_DEEP_BUILTIN_SUBAGENTS", True),
         include_plan=bool_env("PYDANTIC_DEEP_PLAN", True),
         include_memory=bool_env("PYDANTIC_DEEP_MEMORY", False),
@@ -1052,19 +1236,33 @@ async def run_agent_once(
         prompt = f"{history}\n\nUser: {prompt}"
         print(f"[HISTORY_LOADED] Session {session_id}: Loaded history, new prompt length = {len(prompt)} chars", flush=True)
 
+    environment_row = get_environment(session_row["environment_id"])
+    runtime_env: dict[str, str] = {}
+    if environment_row:
+        runtime_env = environment_env_vars(parse_json(environment_row["config"], {}))
+
     async def execute() -> None:
-        async with agent.iter(prompt, deps=deps) as run:
-            async for node in run:
-                emit_node_events(
-                    session_id,
-                    node,
-                    model,
-                    seen_text,
-                    seen_tools,
-                    seen_results,
-                    pending_tool_ids_by_name,
-                )
-            emit_text(session_id, result_output_text(run.result), model, seen_text)
+        previous_env = {key: os.environ.get(key) for key in runtime_env}
+        os.environ.update(runtime_env)
+        try:
+            async with agent.iter(prompt, deps=deps) as run:
+                async for node in run:
+                    emit_node_events(
+                        session_id,
+                        node,
+                        model,
+                        seen_text,
+                        seen_tools,
+                        seen_results,
+                        pending_tool_ids_by_name,
+                    )
+                emit_text(session_id, result_output_text(run.result), model, seen_text)
+        finally:
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     if mcp_toolsets:
         async with agent:
