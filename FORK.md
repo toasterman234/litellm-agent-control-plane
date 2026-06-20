@@ -21,6 +21,6 @@ See **ADR-0001** in `central-repo-ops`
 
 ## Known follow-ups (tracked in central-repo-ops)
 - **#20** — this core-tier baseline (governance files + enable Issues).
-- Source currently builds from the **SSD**, against the no-runtime-on-SSD rule — move
-  to internal disk (the SSD unmount on 2026-06-07 SIGBUS-crashed a live session).
+- **#36** — source currently builds from the **SSD**, against the no-runtime-on-SSD
+  rule (the 2026-06-07 SSD unmount SIGBUS-crashed a live session); move to internal disk.
 - **#35** — model identity (runs report a model not in LAP's list).
