@@ -1,0 +1,4 @@
+# Core-tier runtime: every change requires the maintainer's review.
+# Single-maintainer fork — @toasterman234 owns all paths. (True 2-approval isn't
+# possible on a solo account; this enforces required-reviewer + a deliberate gate.)
+* @toasterman234
