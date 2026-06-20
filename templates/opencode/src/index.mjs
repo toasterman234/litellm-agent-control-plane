@@ -13,17 +13,23 @@ import {
   writeProviderConfig,
   ensureProviderModel,
   gitInit,
+  seedBaseConfig,
+  ensureWorkspaceMirror,
 } from "./opencode.mjs";
 import { buildSandboxProvider } from "./sandbox.mjs";
 import { createApp } from "./app.mjs";
-import { fetchLiteLlmModels } from "./model-list.mjs";
+import { fetchLiteLlmModels, fetchOpencodeProviderModels } from "./model-list.mjs";
 import { opencodeModel, opencodeModelString } from "./models.mjs";
 
 // ---- boot config ----------------------------------------------------------
 const PORT = process.env.PORT || 8080;
 const OC_PORT = Number(process.env.OPENCODE_PORT || 4096);
 const WORKDIR = process.env.WORKDIR || "/tmp/opencode-workspace";
+const LAP_DEFAULT_WORKSPACE = process.env.LAP_DEFAULT_WORKSPACE || null;
 const DB_PATH = process.env.DB_PATH || "/data/agents.db";
+const OPENCODE_BASE_CONFIG_PATH = process.env.OPENCODE_BASE_CONFIG_PATH || null;
+const OPENCODE_MEMORY_PLUGIN_CONFIG_PATH = process.env.OPENCODE_MEMORY_PLUGIN_CONFIG_PATH || null;
+const OPENCODE_PROVIDER_ID = process.env.OPENCODE_PROVIDER_ID || null;
 
 mkdirSync(WORKDIR, { recursive: true });
 
@@ -31,6 +37,15 @@ const store = createStore(DB_PATH);
 
 // opencode only loads custom agents in a git project — make the workspace one.
 await gitInit(WORKDIR);
+await seedBaseConfig(WORKDIR, {
+  baseConfigPath: OPENCODE_BASE_CONFIG_PATH,
+  memoryPluginConfigPath: OPENCODE_MEMORY_PLUGIN_CONFIG_PATH,
+});
+if (LAP_DEFAULT_WORKSPACE) {
+  await ensureWorkspaceMirror(WORKDIR, LAP_DEFAULT_WORKSPACE).catch((error) => {
+    console.error(`[boot] workspace mirror failed: ${error.message}`);
+  });
+}
 
 // Optionally route opencode's model calls through a LiteLLM gateway.
 const LITELLM_BASE_URL = process.env.LITELLM_BASE_URL || null;
@@ -79,7 +94,8 @@ if (sandbox.error) {
     `[boot] sandbox execution enabled (${sandbox.provider.providerName}) — bash/edit denied, routed to sandbox MCP`
   );
 }
-const DEFAULT_MODEL_PROVIDER_ID = LITELLM_BASE_URL && LITELLM_API_KEY ? LITELLM_PROVIDER_ID : null;
+const REGISTERED_MODEL_PROVIDER_ID = LITELLM_BASE_URL && LITELLM_API_KEY ? LITELLM_PROVIDER_ID : null;
+const DEFAULT_MODEL_PROVIDER_ID = OPENCODE_PROVIDER_ID || REGISTERED_MODEL_PROVIDER_ID;
 
 // Re-provision every stored agent into the (ephemeral) workdir. The SQLite DB
 // lives on a persistent volume but the agent .md files live in WORKDIR, which
@@ -89,7 +105,7 @@ const DEFAULT_MODEL_PROVIDER_ID = LITELLM_BASE_URL && LITELLM_API_KEY ? LITELLM_
   const agents = store.listAgents();
   for (const row of agents) {
     const model = opencodeModel(row.model, DEFAULT_MODEL_PROVIDER_ID);
-    if (model?.providerID === LITELLM_PROVIDER_ID) {
+    if (model?.providerID === REGISTERED_MODEL_PROVIDER_ID) {
       await ensureProviderModel(WORKDIR, model);
     }
     await provisionAgent(WORKDIR, {
@@ -102,8 +118,13 @@ const DEFAULT_MODEL_PROVIDER_ID = LITELLM_BASE_URL && LITELLM_API_KEY ? LITELLM_
 }
 
 async function listModels() {
+  if (OPENCODE_PROVIDER_ID) {
+    return fetchOpencodeProviderModels({
+      providerID: OPENCODE_PROVIDER_ID,
+    });
+  }
   if (!LITELLM_BASE_URL || !LITELLM_API_KEY) {
-    throw new Error("LITELLM_BASE_URL and LITELLM_API_KEY are required for model discovery");
+    throw new Error("Set OPENCODE_PROVIDER_ID or LITELLM_BASE_URL/LITELLM_API_KEY for model discovery");
   }
   return fetchLiteLlmModels({
     baseURL: LITELLM_BASE_URL,
@@ -184,7 +205,7 @@ const app = createApp({
   store,
   workdir: WORKDIR,
   defaultModelProviderID: DEFAULT_MODEL_PROVIDER_ID,
-  litellmProviderID: LITELLM_PROVIDER_ID,
+  registeredModelProviderID: REGISTERED_MODEL_PROVIDER_ID,
   listModels,
   ensureProviderModel,
   provisionAgent,

@@ -30,6 +30,7 @@ OPENCLAW_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("OPENCLAW_REQUEST_TIMEOU
 OPENCLAW_MCP_RELOAD_TIMEOUT_SECONDS = float(os.environ.get("OPENCLAW_MCP_RELOAD_TIMEOUT_SECONDS", "15"))
 OPENCLAW_MCP_RELOAD_COMMAND = os.environ.get("OPENCLAW_MCP_RELOAD_COMMAND", "openclaw mcp reload")
 RUNTIME_API_KEY = os.environ.get("RUNTIME_API_KEY")
+LAP_DEFAULT_WORKSPACE = os.environ.get("LAP_DEFAULT_WORKSPACE", "").strip()
 OPENCLAW_CONFIG_PATH = os.environ.get(
     "OPENCLAW_CONFIG_PATH",
     str(Path(os.environ.get("HOME", "/data")) / ".openclaw" / "openclaw.json"),
@@ -516,6 +517,13 @@ def get_session(session_id: str) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
 
 
+def get_environment(environment_id: str | None) -> sqlite3.Row | None:
+    if not environment_id:
+        return None
+    with db() as conn:
+        return conn.execute("SELECT * FROM environments WHERE id = ?", (environment_id,)).fetchone()
+
+
 def store_event(session_id: str, event: str, data: dict[str, Any]) -> dict[str, Any]:
     if "id" not in data:
         data = {"id": new_id("sevt"), **data}
@@ -779,13 +787,71 @@ def parse_chat_tool_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def workspace_root_from_config(config: Any) -> Path | None:
+    if not isinstance(config, dict):
+        return None
+    candidates = [
+        config.get("workspace_path"),
+        config.get("workspacePath"),
+        config.get("workdir"),
+        config.get("cwd"),
+        config.get("root_dir"),
+        config.get("rootDir"),
+        config.get("path"),
+    ]
+    workspace = config.get("workspace")
+    if isinstance(workspace, dict):
+        candidates.extend([workspace.get("path"), workspace.get("root"), workspace.get("root_dir")])
+    source = config.get("source")
+    if isinstance(source, dict):
+        candidates.extend([source.get("path"), source.get("root"), source.get("root_dir")])
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        root = Path(candidate.strip()).expanduser()
+        if candidate.strip() and root.is_dir():
+            return root
+    return None
+
+
+def resolve_workspace_root(session_id: str) -> Path | None:
+    session_row = get_session(session_id)
+    if session_row:
+        environment_row = get_environment(session_row["environment_id"])
+        if environment_row:
+            config = parse_json(environment_row["config"], {})
+            root = workspace_root_from_config(config)
+            if root is not None:
+                return root
+    if LAP_DEFAULT_WORKSPACE:
+        root = Path(LAP_DEFAULT_WORKSPACE).expanduser()
+        if root.is_dir():
+            return root
+    return None
+
+
+def openclaw_system_prompt(session_id: str, agent_row: sqlite3.Row) -> str:
+    base = (agent_row["system"] or "").strip()
+    workspace_root = resolve_workspace_root(session_id)
+    if workspace_root is None:
+        return base
+    contract = (
+        f"Workspace root: {workspace_root}\n"
+        "Treat `AGENTS.md`, `CLAUDE.md`, `CODING_STANDARDS.md`, and `.agent/rules/` as authoritative workspace rules.\n"
+        "Treat `.agent/skills/` and `skills/` as skills, not rules.\n"
+        "Before claiming the workspace has no rules, inspect `AGENTS.md` and any nearer scoped instruction files first."
+    )
+    return f"{base}\n\n{contract}".strip()
+
+
 def call_openclaw_chat(session_id: str, prompt: str, agent_row: sqlite3.Row) -> dict[str, Any]:
     with config_lock:
         sync_openclaw_mcp_config(agent_row)
         target_model, backend_model = openclaw_request_target(agent_row)
         messages: list[dict[str, str]] = []
-        if agent_row["system"]:
-            messages.append({"role": "system", "content": agent_row["system"]})
+        system_prompt = openclaw_system_prompt(session_id, agent_row)
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         body = {
             "model": target_model,

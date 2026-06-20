@@ -1,3 +1,8 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileP = promisify(execFile);
+
 export function modelListFromValue(value, ownedBy = "litellm") {
   const items = Array.isArray(value?.data)
     ? value.data
@@ -28,6 +33,21 @@ export function modelListFromValue(value, ownedBy = "litellm") {
   return { object: "list", data };
 }
 
+export function modelListFromLines(text, ownedBy) {
+  const data = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((id) => ({
+      id,
+      object: "model",
+      created: 0,
+      owned_by: ownedBy,
+    }));
+
+  return { object: "list", data };
+}
+
 export async function fetchLiteLlmModels({ baseURL, apiKey, ownedBy = "litellm" }) {
   const url = new URL("models", `${baseURL.replace(/\/+$/, "")}/`);
   const res = await fetch(url, {
@@ -45,4 +65,12 @@ export async function fetchLiteLlmModels({ baseURL, apiKey, ownedBy = "litellm" 
   const models = modelListFromValue(raw, ownedBy);
   if (!models) throw new Error("LiteLLM models response missing data");
   return models;
+}
+
+export async function fetchOpencodeProviderModels({ providerID, opencodeBin = "opencode" }) {
+  const { stdout } = await execFileP(opencodeBin, ["models", providerID], {
+    env: process.env,
+    maxBuffer: 1024 * 1024,
+  });
+  return modelListFromLines(stdout, providerID);
 }

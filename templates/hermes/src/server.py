@@ -25,6 +25,7 @@ LAP_API_KEY = os.environ.get("LAP_API_KEY", "").strip()
 HERMES_COMMAND = os.environ.get("HERMES_COMMAND", "hermes")
 HERMES_HOME_ROOT = os.environ.get("HERMES_HOME_ROOT", "/data/hermes-home")
 HERMES_WORKDIR = os.environ.get("HERMES_WORKDIR", "/tmp/hermes-workspace")
+LAP_DEFAULT_WORKSPACE = os.environ.get("LAP_DEFAULT_WORKSPACE", "").strip()
 HERMES_TOOLSETS = os.environ.get("HERMES_TOOLSETS", "terminal,web")
 HERMES_MAX_TURNS = int(os.environ.get("HERMES_MAX_TURNS", "20"))
 HERMES_TIMEOUT_SECONDS = int(os.environ.get("HERMES_TIMEOUT_SECONDS", "300"))
@@ -232,6 +233,13 @@ def get_agent(agent_id: str) -> sqlite3.Row | None:
 def get_session(session_id: str) -> sqlite3.Row | None:
     with db() as conn:
         return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+
+
+def get_environment(environment_id: str | None) -> sqlite3.Row | None:
+    if not environment_id:
+        return None
+    with db() as conn:
+        return conn.execute("SELECT * FROM environments WHERE id = ?", (environment_id,)).fetchone()
 
 
 def append_event(session_id: str, event: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -494,17 +502,75 @@ def hermes_home(session_id: str) -> Path:
     return path
 
 
-def write_hermes_context(session_id: str, agent_row: sqlite3.Row) -> None:
+def workspace_root_from_config(config: Any) -> Path | None:
+    if not isinstance(config, dict):
+        return None
+    candidates = [
+        config.get("workspace_path"),
+        config.get("workspacePath"),
+        config.get("workdir"),
+        config.get("cwd"),
+        config.get("root_dir"),
+        config.get("rootDir"),
+        config.get("path"),
+    ]
+    workspace = config.get("workspace")
+    if isinstance(workspace, dict):
+        candidates.extend([workspace.get("path"), workspace.get("root"), workspace.get("root_dir")])
+    source = config.get("source")
+    if isinstance(source, dict):
+        candidates.extend([source.get("path"), source.get("root"), source.get("root_dir")])
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        root = Path(candidate.strip()).expanduser()
+        if candidate.strip() and root.is_dir():
+            return root
+    return None
+
+
+def resolve_workspace_root(session_row: sqlite3.Row) -> Path | None:
+    environment_row = get_environment(session_row["environment_id"])
+    if environment_row:
+        config = parse_json(environment_row["config"], {})
+        root = workspace_root_from_config(config)
+        if root is not None:
+            return root
+    if LAP_DEFAULT_WORKSPACE:
+        root = Path(LAP_DEFAULT_WORKSPACE).expanduser()
+        if root.is_dir():
+            return root
+    return None
+
+
+def write_hermes_context(session_row: sqlite3.Row, agent_row: sqlite3.Row) -> None:
     if not LAP_BASE_URL:
         raise RuntimeError("LAP_BASE_URL is required")
     if not LAP_API_KEY:
         raise RuntimeError("LAP_API_KEY is required")
+    session_id = str(session_row["id"])
     home = hermes_home(session_id)
     workdir = Path(HERMES_WORKDIR) / session_id
     workdir.mkdir(parents=True, exist_ok=True)
+    workspace_root = resolve_workspace_root(session_row)
+    workspace_ref = "workspace"
+    if workspace_root is not None:
+        link_path = workdir / workspace_ref
+        if link_path.exists() or link_path.is_symlink():
+            link_path.unlink()
+        link_path.symlink_to(workspace_root, target_is_directory=True)
     system = (agent_row["system"] or "You are a helpful assistant.").strip()
     agent_name = agent_row["name"] or "Hermes Agent"
-    context = f"# {agent_name}\n\n{system}\n"
+    workspace_section = ""
+    if workspace_root is not None:
+        workspace_section = (
+            f"\n\nWorkspace root: {workspace_root}\n"
+            f"Mirrored in this session as ./{workspace_ref}\n"
+            "Rules: inspect `workspace/AGENTS.md`, `workspace/CLAUDE.md`, `workspace/CODING_STANDARDS.md`, and `workspace/.agent/rules/` first.\n"
+            "Skills: inspect `workspace/.agent/skills/` and `workspace/skills/`.\n"
+            "Skills are not rules unless a rule file explicitly makes them mandatory.\n"
+        )
+    context = f"# {agent_name}\n\n{system}{workspace_section}\n"
     (workdir / "AGENTS.md").write_text(context, encoding="utf-8")
     config = {
         "model": {
@@ -581,7 +647,10 @@ def hermes_failure_detail(session_id: str, proc: subprocess.CompletedProcess[str
 
 
 def run_hermes_cli(session_id: str, prompt: str, agent_row: sqlite3.Row) -> tuple[str, bool]:
-    write_hermes_context(session_id, agent_row)
+    session_row = get_session(session_id)
+    if session_row is None:
+        raise RuntimeError("session not found")
+    write_hermes_context(session_row, agent_row)
     workdir = Path(HERMES_WORKDIR) / session_id
     started_at = time.time()
     command = [

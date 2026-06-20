@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
-    db::managed_agents::{memory, messages, registry, sessions},
+    db::managed_agents::{memory, messages, registry, runtime_events, sessions},
     errors::GatewayError,
 };
 
@@ -44,6 +44,8 @@ pub async fn read_platform_session(pool: &PgPool, arguments: Value) -> Result<Va
         .await?
         .ok_or_else(|| GatewayError::NotFound("session not found".to_owned()))?;
     let rows = messages::repository::list(pool, session_id).await?;
+    let runtime_events = runtime_events::repository::list(pool, session_id).await?;
+    let transcript = super::session_management::platform_transcript(&rows, &runtime_events);
     Ok(json!({
         "session": session,
         "messages": rows.into_iter().map(|row| {
@@ -53,7 +55,9 @@ pub async fn read_platform_session(pool: &PgPool, arguments: Value) -> Result<Va
                 "info": serde_json::from_str::<Value>(&row.info_json).unwrap_or(Value::String(row.info_json)),
                 "parts": serde_json::from_str::<Value>(&row.parts_json).unwrap_or(Value::String(row.parts_json))
             })
-        }).collect::<Vec<_>>()
+        }).collect::<Vec<_>>(),
+        "runtime_events": runtime_events,
+        "transcript": transcript
     }))
 }
 

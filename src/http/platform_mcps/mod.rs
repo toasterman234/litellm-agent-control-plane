@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use crate::{
+    db::managed_agents::{inbox, registry},
     errors::GatewayError,
     proxy::{auth::master_key::require_any_gateway_key, state::AppState},
 };
@@ -56,11 +57,15 @@ pub fn platform_mcp_servers(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(vec![json!({
+    let mut server = json!({
         "name": PLATFORM_MCP_SERVER_NAME,
         "type": "url",
         "url": platform_mcp_url(state, agent_id, session_id)?
-    })])
+    });
+    if let Some(master_key) = state.config.general_settings.master_key.as_deref() {
+        server["authorization_token"] = Value::String(master_key.to_owned());
+    }
+    Ok(vec![server])
 }
 
 pub fn platform_mcp_toolsets(config: &Value) -> Vec<Value> {
@@ -161,6 +166,68 @@ async fn call_tool(
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    // Authorization: an agent may only call platform tools it is configured for.
+    // `selected_platform_mcp_ids` is the same allow-list advertised to the runtime;
+    // without this check the endpoint executes any named tool, so config-level tool
+    // restriction is meaningless and agents can reach create/slack tools they were
+    // never granted.
+    let agent = registry::repository::get(pool, agent_id)
+        .await?
+        .ok_or_else(|| GatewayError::UnknownAgent(agent_id.to_owned()))?;
+    let allowed = selected_platform_mcp_ids(&agent.config);
+    if !allowed.iter().any(|id| id.as_str() == name) {
+        return Ok(json!({
+            "isError": true,
+            "content": [{ "type": "text", "text": format!(
+                "Tool '{name}' is not permitted for this agent. Allowed tools: {}.",
+                allowed.join(", ")
+            ) }]
+        }));
+    }
+
+    // Approval gate: creating a managed agent is durable and hard to reverse, so it
+    // requires an accepted human approval tied to this session. The agent must first
+    // call request_human_approval and wait for a human to accept it.
+    if name == CREATE_MANAGED_AGENT_MCP_ID {
+        let approved = match session_id {
+            Some(session_id) => {
+                inbox::repository::has_accepted_approval_for_session(pool, session_id).await?
+            }
+            None => false,
+        };
+        if !approved {
+            return Ok(json!({
+                "isError": true,
+                "content": [{ "type": "text", "text":
+                    "create_managed_agent is blocked: no accepted human approval exists for this session. \
+                     First call request_human_approval with the proposed design (list every agent to create, \
+                     its purpose, and the total count), wait until a human accepts it, then create exactly the \
+                     approved agents."
+                }]
+            }));
+        }
+    }
+
+    // Dispatch the tool, turning an underlying failure into a tool-level error
+    // instead of a 500 that aborts the whole session.
+    match dispatch_tool(state, pool, agent_id, session_id, name, arguments).await {
+        Ok(value) => Ok(value),
+        Err(error) => Ok(json!({
+            "isError": true,
+            "content": [{ "type": "text", "text": format!("Tool '{name}' failed: {error}") }]
+        })),
+    }
+}
+
+async fn dispatch_tool(
+    state: Arc<AppState>,
+    pool: &PgPool,
+    agent_id: &str,
+    session_id: Option<&str>,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, GatewayError> {
     let payload = match name {
         PLATFORM_SESSION_MCP_ID => {
             session_management::read_platform_session(pool, arguments).await?

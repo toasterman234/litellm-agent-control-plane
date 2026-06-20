@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import os
 import queue
@@ -38,6 +39,79 @@ except Exception:  # pragma: no cover - surfaced when Anthropic gateway mode is 
     AnthropicModel = None
     AnthropicProvider = None
 
+try:
+    from pydantic_ai.usage import UsageLimits
+except Exception:  # pragma: no cover - surfaced when pydantic-ai < 1.97
+    UsageLimits = None
+
+try:
+    from pydantic_monty import Monty as _Monty
+except Exception:  # pragma: no cover - optional dependency
+    _Monty = None  # type: ignore[assignment]
+
+from pydantic_ai import Tool as _PydanticTool
+
+
+async def _monty_run(code: str) -> str:
+    """Execute Python code in a secure Monty sandbox.
+
+    Monty is a minimal Python interpreter written in Rust. Code runs in an
+    isolated environment with no filesystem or network access. Supports:
+    variables, functions, control flow, async/await, json, re, datetime,
+    dataclasses, sys, typing.
+
+    Args:
+        code: Python source code to execute.
+
+    Returns:
+        The stdout output of the executed code.
+    """
+    result = _Monty().run(code)  # type: ignore[union-attr]
+    output = getattr(result, "output", str(result))
+    return str(output)
+
+
+_monty_tool = _PydanticTool(_monty_run)
+
+DEFAULT_META_AGENT_PROMPT = """
+You are the primary meta agent for this workspace. Your job is to understand the goal, decompose it into the right level of detail, decide whether to solve it directly or delegate it, and drive the work to a clean outcome.
+
+Core role:
+- Act as strategist, orchestrator, researcher, and hands-on builder.
+- Break ambiguous work into explicit milestones, decision points, and validation steps.
+- Use subagents, attached agents, MCP tools, and available skills deliberately when they improve speed, quality, or isolation.
+- Prefer direct execution for small tasks and delegation for specialized, parallel, or long-running work.
+
+Delegation and orchestration:
+- When delegation helps, define the sub-task clearly, state the expected output, and keep track of what each delegate is doing.
+- Synthesize delegated results back into one coherent answer or implementation plan.
+- If multiple agents overlap, choose roles intentionally instead of duplicating effort.
+
+Agent and system design:
+- You may design, create, edit, and optimize LAP agents, rules, skills, prompts, configs, and supporting files when that is the best path.
+- You may improve agent definitions, tool wiring, memory setup, orchestration, and runtime configuration when you find a better design.
+- Treat yourself as continuously improvable, but require explicit user approval before making durable self-modifications, changing your standing profile, or changing other agents in ways that are hard to reverse.
+
+Approval policy:
+- You may inspect, draft, simulate, and propose changes autonomously.
+- Ask for explicit approval before self-upgrades, changing another agent's role or persistent behavior, making broad multi-agent restructures, or applying changes with non-obvious product or operational consequences.
+- When asking for approval, present the smallest safe change, expected benefit, main risks, and how you will verify it.
+
+Execution style:
+- Stay outcome-oriented. Move between planning and execution fluidly.
+- Research first when facts, APIs, runtimes, or constraints are uncertain.
+- Edit files, create artifacts, and run tools when needed instead of stopping at advice.
+- Keep intermediate state visible: what is known, what is assumed, what is blocked, and what is next.
+- End major tasks with a crisp synthesis that separates findings, actions taken, open risks, and recommended next steps.
+
+Context and memory startup behavior:
+- When the request refers to prior discussion, previous decisions, an ongoing build, or "what we said earlier", first try to recover context before answering.
+- In LAP, check recent platform session history early when continuity matters.
+- Search durable agent memory for prior decisions, preferences, architecture choices, and named projects before making assumptions.
+- If useful context is found, say you are using it and continue.
+- If useful context is not found, say what you could not recover and ask a narrow follow-up only if that missing context blocks a good answer.
+""".strip()
+
 
 PORT = int(os.environ.get("PORT", "8080"))
 DB_PATH = os.environ.get("DB_PATH", "/data/agents.db")
@@ -51,6 +125,12 @@ PYDANTIC_DEEP_WORKDIR_ROOT = os.environ.get(
     "PYDANTIC_DEEP_WORKDIR_ROOT",
     "/data/workspaces",
 )
+LAP_DEFAULT_WORKSPACE = os.environ.get("LAP_DEFAULT_WORKSPACE", "").strip()
+PYDANTIC_DEEP_DEFAULT_WORKSPACE = os.environ.get("PYDANTIC_DEEP_DEFAULT_WORKSPACE", "").strip()
+PYDANTIC_DEEP_MAX_NESTING_DEPTH = int(os.environ.get("PYDANTIC_DEEP_MAX_NESTING_DEPTH", "1"))
+PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS = int(os.environ.get("PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS", "0")) or None
+PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS = int(os.environ.get("PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS", "0")) or None
+PYDANTIC_DEEP_MONTY = os.environ.get("PYDANTIC_DEEP_MONTY", "").strip().lower() in ("1", "true", "yes")
 
 if LITELLM_BASE_URL and LITELLM_API_KEY and LITELLM_API_FORMAT != "anthropic":
     openai_base = os.environ.get("LITELLM_OPENAI_BASE_URL", "").strip().rstrip("/")
@@ -128,6 +208,17 @@ def init_db() -> None:
               description TEXT,
               created_at INTEGER
             );
+            CREATE TABLE IF NOT EXISTS vaults (
+              id TEXT PRIMARY KEY,
+              display_name TEXT,
+              created_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS vault_credentials (
+              id TEXT PRIMARY KEY,
+              vault_id TEXT,
+              auth TEXT,
+              created_at INTEGER
+            );
             CREATE TABLE IF NOT EXISTS sessions (
               id TEXT PRIMARY KEY,
               agent_id TEXT,
@@ -177,6 +268,14 @@ class CreateSessionRequest(BaseModel):
 
 class SendEventsRequest(BaseModel):
     events: list[dict[str, Any]]
+
+
+class CreateVaultRequest(BaseModel):
+    display_name: str | None = None
+
+
+class CreateVaultCredentialRequest(BaseModel):
+    auth: dict[str, Any] | None = None
 
 
 @app.middleware("http")
@@ -378,6 +477,14 @@ def row_to_environment(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def row_to_vault(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "display_name": row["display_name"] or "Pydantic Deep Agents vault",
+        "created_at": row["created_at"],
+    }
+
+
 def row_to_session(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -399,6 +506,13 @@ def get_agent(agent_id: str) -> sqlite3.Row | None:
 def get_session(session_id: str) -> sqlite3.Row | None:
     with db() as conn:
         return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+
+
+def get_environment(environment_id: str | None) -> sqlite3.Row | None:
+    if not environment_id:
+        return None
+    with db() as conn:
+        return conn.execute("SELECT * FROM environments WHERE id = ?", (environment_id,)).fetchone()
 
 
 def insert_event(session_id: str, event: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -500,6 +614,43 @@ def user_text(events: list[dict[str, Any]]) -> str:
                 elif isinstance(item, dict) and item.get("type") == "text":
                     chunks.append(str(item.get("text") or ""))
     return "\n".join(chunk for chunk in chunks if chunk).strip()
+
+
+def load_conversation_history(session_id: str) -> str:
+    """Load previous user and assistant messages from session events."""
+    events = list_events(session_id)
+    messages: list[str] = []
+    for event in events:
+        event_type = str(event.get("event") or event.get("type") or "")
+        data = event.get("data")
+        if not isinstance(data, dict):
+            data = event if isinstance(event, dict) else {}
+        content = data.get("content", [])
+        
+        if event_type == "user.message":
+            # User message
+            if isinstance(content, str):
+                if content.strip():
+                    messages.append(f"User: {content.strip()}")
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text = item.get("text", "")
+                        if text.strip():
+                            messages.append(f"User: {text.strip()}")
+        elif event_type == "agent.message":
+            # Assistant message
+            if isinstance(content, str):
+                if content.strip():
+                    messages.append(f"Assistant: {content.strip()}")
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text = item.get("text", "")
+                        if text.strip():
+                            messages.append(f"Assistant: {text.strip()}")
+    
+    return "\n".join(messages) if messages else ""
 
 
 def clip(value: Any, limit: int = 20_000) -> str:
@@ -686,6 +837,66 @@ def session_workdir(session_id: str) -> Path:
     return path
 
 
+def workspace_root_from_config(config: Any) -> Path | None:
+    if not isinstance(config, dict):
+        return None
+    candidates = [
+        config.get("workspace_path"),
+        config.get("workspacePath"),
+        config.get("workdir"),
+        config.get("cwd"),
+        config.get("root_dir"),
+        config.get("rootDir"),
+        config.get("path"),
+    ]
+    workspace = config.get("workspace")
+    if isinstance(workspace, dict):
+        candidates.extend(
+            [
+                workspace.get("path"),
+                workspace.get("root"),
+                workspace.get("root_dir"),
+            ]
+        )
+    source = config.get("source")
+    if isinstance(source, dict):
+        candidates.extend(
+            [
+                source.get("path"),
+                source.get("root"),
+                source.get("root_dir"),
+            ]
+        )
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        value = candidate.strip()
+        if not value:
+            continue
+        root = Path(value).expanduser()
+        if root.is_dir():
+            return root
+    return None
+
+
+def session_backend_root(session_row: sqlite3.Row, session_id: str) -> Path:
+    environment_row = get_environment(session_row["environment_id"])
+    if environment_row:
+        config = parse_json(environment_row["config"], {})
+        root = workspace_root_from_config(config)
+        if root is not None:
+            return root
+    if LAP_DEFAULT_WORKSPACE:
+        fallback = Path(LAP_DEFAULT_WORKSPACE).expanduser()
+        if fallback.is_dir():
+            return fallback
+    if PYDANTIC_DEEP_DEFAULT_WORKSPACE:
+        fallback = Path(PYDANTIC_DEEP_DEFAULT_WORKSPACE).expanduser()
+        if fallback.is_dir():
+            return fallback
+    return session_workdir(session_id)
+
+
 def mcp_mapping(raw_servers: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(raw_servers, list):
         return {}
@@ -734,14 +945,61 @@ def build_mcp_toolsets(row: sqlite3.Row) -> list[Any]:
     return toolsets
 
 
-def build_agent(row: sqlite3.Row, backend: Any) -> tuple[Any, list[Any]]:
+def subagent_usage_limits() -> Any:
+    if UsageLimits is None:
+        return None
+    try:
+        usage_limit_params = inspect.signature(UsageLimits).parameters
+    except (TypeError, ValueError):
+        usage_limit_params = {}
+    kwargs: dict[str, int] = {}
+    if PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS:
+        if "request_limit" in usage_limit_params:
+            kwargs["request_limit"] = PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS
+        elif "max_requests" in usage_limit_params:
+            kwargs["max_requests"] = PYDANTIC_DEEP_SUBAGENT_MAX_REQUESTS
+    if PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS:
+        if "total_tokens_limit" in usage_limit_params:
+            kwargs["total_tokens_limit"] = PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS
+        elif "request_tokens_limit" in usage_limit_params:
+            kwargs["request_tokens_limit"] = PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS
+        elif "input_tokens_limit" in usage_limit_params:
+            kwargs["input_tokens_limit"] = PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS
+        elif "max_request_tokens" in usage_limit_params:
+            kwargs["max_request_tokens"] = PYDANTIC_DEEP_SUBAGENT_MAX_TOKENS
+    return UsageLimits(**kwargs) if kwargs else None
+
+
+def build_agent(row: sqlite3.Row, backend: Any, session_id: str) -> tuple[Any, list[Any]]:
     if create_deep_agent is None or DeepAgentDeps is None:
         raise RuntimeError("pydantic_deep package is not importable")
     model = model_for_pydantic_deep(row["model"] or DEFAULT_MODEL)
     mcp_toolsets = build_mcp_toolsets(row)
+    extra_tools: list[Any] = []
+    if PYDANTIC_DEEP_MONTY and _Monty is not None:
+        extra_tools.append(_monty_tool)
+    base_instructions = (row["system"] or "").strip()
+    if base_instructions:
+        instructions = f"{base_instructions}\n\n{DEFAULT_META_AGENT_PROMPT}"
+    else:
+        instructions = DEFAULT_META_AGENT_PROMPT
+    instructions = (
+        f"{instructions}\n\n"
+        "Workspace instruction policy:\n"
+        "- Treat `AGENTS.md`, `CLAUDE.md`, `CODING_STANDARDS.md`, and files under `.agent/rules/` as authoritative workspace rules.\n"
+        "- Treat `.agent/skills/` and `skills/` as skills, not rules.\n"
+        "- Distinguish skills from rules. Skills are optional procedures or capabilities; workspace rule files are governing instructions.\n"
+        "- Before claiming the workspace has no rules, inspect `AGENTS.md` and any nearer scoped instruction files first.\n\n"
+        "Persistent memory policy:\n"
+        "- Use the platform `agent_memory` MCP tool for cross-session memory when it is available.\n"
+        "- Use the platform `read_platform_session` MCP tool when you need prior LAP chat history.\n"
+        "- For requests that depend on prior context, check session history and durable memory before answering from scratch.\n"
+        "- Do not rely on filesystem-based memory files unless the user explicitly asks for that path."
+    )
     agent = create_deep_agent(
+        tools=extra_tools or None,
         model=model,
-        instructions=row["system"] or "You are a helpful autonomous assistant.",
+        instructions=instructions,
         backend=backend,
         mcp_servers=mcp_toolsets or None,
         include_todo=bool_env("PYDANTIC_DEEP_TODO", True),
@@ -750,8 +1008,10 @@ def build_agent(row: sqlite3.Row, backend: Any) -> tuple[Any, list[Any]]:
         include_skills=bool_env("PYDANTIC_DEEP_SKILLS", True),
         include_builtin_subagents=bool_env("PYDANTIC_DEEP_BUILTIN_SUBAGENTS", True),
         include_plan=bool_env("PYDANTIC_DEEP_PLAN", True),
-        include_memory=bool_env("PYDANTIC_DEEP_MEMORY", True),
+        include_memory=bool_env("PYDANTIC_DEEP_MEMORY", False),
         include_execute=bool_env("PYDANTIC_DEEP_EXECUTE", True),
+        max_nesting_depth=PYDANTIC_DEEP_MAX_NESTING_DEPTH,
+        subagent_usage_limits=subagent_usage_limits(),
         include_checkpoints=bool_env("PYDANTIC_DEEP_CHECKPOINTS", False),
         include_teams=bool_env("PYDANTIC_DEEP_TEAMS", False),
         include_liteparse=bool_env("PYDANTIC_DEEP_LITEPARSE", False),
@@ -764,7 +1024,7 @@ def build_agent(row: sqlite3.Row, backend: Any) -> tuple[Any, list[Any]]:
         context_manager=bool_env("PYDANTIC_DEEP_CONTEXT_MANAGER", True),
         cost_tracking=bool_env("PYDANTIC_DEEP_COST_TRACKING", True),
         forking=bool_env("PYDANTIC_DEEP_FORKING", False),
-        history_messages_path=f".pydantic-deep/{row['id']}/messages.json",
+        history_messages_path=str(session_workdir(session_id) / ".pydantic-deep" / "messages.json"),
     )
     return agent, mcp_toolsets
 
@@ -772,17 +1032,25 @@ def build_agent(row: sqlite3.Row, backend: Any) -> tuple[Any, list[Any]]:
 async def run_agent_once(
     session_id: str,
     prompt: str,
+    session_row: sqlite3.Row,
     agent_row: sqlite3.Row,
 ) -> None:
     if LocalBackend is None or DeepAgentDeps is None:
         raise RuntimeError("pydantic_deep backend dependencies are not importable")
-    backend = LocalBackend(root_dir=str(session_workdir(session_id)))
+    backend = LocalBackend(root_dir=str(session_backend_root(session_row, session_id)))
     deps = DeepAgentDeps(backend=backend)
-    agent, mcp_toolsets = build_agent(agent_row, backend)
+    agent, mcp_toolsets = build_agent(agent_row, backend, session_id)
     model = normalize_model_for_pydantic_deep(agent_row["model"] or DEFAULT_MODEL)
     seen_text: set[str] = set()
     seen_tools, seen_results = seen_tool_event_ids(session_id)
     pending_tool_ids_by_name: dict[str, list[str]] = {}
+    
+    # Load conversation history and prepend to prompt for context
+    history = load_conversation_history(session_id)
+    print(f"[HISTORY_CHECK] Session {session_id}: History length = {len(history)} chars", flush=True)
+    if history:
+        prompt = f"{history}\n\nUser: {prompt}"
+        print(f"[HISTORY_LOADED] Session {session_id}: Loaded history, new prompt length = {len(prompt)} chars", flush=True)
 
     async def execute() -> None:
         async with agent.iter(prompt, deps=deps) as run:
@@ -837,7 +1105,7 @@ def run_agent(session_id: str, prompt: str) -> None:
         append_event(session_id, "session.status_running", {})
         success = True
         try:
-            asyncio.run(run_agent_once(session_id, prompt, agent_row))
+            asyncio.run(run_agent_once(session_id, prompt, session, agent_row))
         except Exception as exc:
             success = False
             append_event(session_id, "session.error", {"error": {"message": str(exc)}})
@@ -981,6 +1249,51 @@ def create_environment(input: CreateEnvironmentRequest) -> dict[str, Any]:
     return row_to_environment(row)
 
 
+@app.post("/v1/vaults")
+def create_vault(input: CreateVaultRequest) -> dict[str, Any]:
+    vault_id = new_id("vault")
+    timestamp = now_ms()
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO vaults (id, display_name, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (
+                vault_id,
+                input.display_name or "LiteLLM MCP Gateway",
+                timestamp,
+            ),
+        )
+        row = conn.execute("SELECT * FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+    return row_to_vault(row)
+
+
+@app.post("/v1/vaults/{vault_id}/credentials")
+def create_vault_credential(
+    vault_id: str,
+    input: CreateVaultCredentialRequest,
+) -> dict[str, Any]:
+    with db() as conn:
+        vault = conn.execute("SELECT id FROM vaults WHERE id = ?", (vault_id,)).fetchone()
+        if not vault:
+            raise HTTPException(status_code=404, detail="vault not found")
+        credential_id = new_id("vcred")
+        conn.execute(
+            """
+            INSERT INTO vault_credentials (id, vault_id, auth, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                credential_id,
+                vault_id,
+                json_dumps(input.auth or {}),
+                now_ms(),
+            ),
+        )
+    return {"id": credential_id, "vault_id": vault_id}
+
+
 @app.post("/v1/sessions")
 def create_session(input: CreateSessionRequest) -> dict[str, Any]:
     if not get_agent(input.agent):
@@ -1015,6 +1328,12 @@ def send_events(session_id: str, input: SendEventsRequest) -> JSONResponse:
     prompt = user_text(input.events)
     if not prompt:
         raise HTTPException(status_code=400, detail="no user.message text")
+    
+    # Save incoming user.message events to database for history
+    for event in input.events:
+        if event.get("type") == "user.message":
+            append_event(session_id, "user.message", event)
+    
     with state_lock:
         run_queues.setdefault(session_id, queue.Queue())
         pending_prompts.setdefault(session_id, queue.Queue())

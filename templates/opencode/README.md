@@ -64,7 +64,7 @@ The server accepts Anthropic-style headers but does not validate the inbound API
 key. LAP still needs a value so it can store the runtime credential.
 
 After adding the runtime, select `opencode-local` in a LAP session and use a
-model returned by your LiteLLM gateway's `/v1/models` endpoint.
+model returned by this wrapper's `/v1/models` endpoint.
 
 ## Per-agent model selection
 
@@ -88,6 +88,20 @@ and the model is registered in the generated `opencode.json` before opencode
 reboots. Pass `litellm/gpt-5.5` to set the provider/model split explicitly. The
 target model must be routable by your configured LiteLLM gateway.
 
+For direct OpenCode providers such as `opencode-go`, set `OPENCODE_PROVIDER_ID`
+to the provider id. Bare model names then normalize to that provider, and
+`GET /v1/models` is sourced from `opencode models <provider>`. For example, if
+`OPENCODE_PROVIDER_ID=opencode-go`, a bare model like `qwen3.7-plus` becomes
+`opencode-go/qwen3.7-plus`.
+
+When using an authenticated OpenCode provider in Docker, mount the host
+credential file into the container so the bundled `opencode` CLI can see the
+same login state:
+
+```bash
+  -v ~/.local/share/opencode/auth.json:/root/.local/share/opencode/auth.json:ro
+```
+
 > The object form `{ "id": "gpt-5.5" }` is still accepted for backward
 > compatibility, but the string form is the documented API.
 
@@ -96,6 +110,26 @@ Smoke-test a specific model end to end:
 ```bash
 BASE=http://localhost:8080 MODEL=gpt-5.5 ./scripts/smoke.sh
 ```
+
+## Reuse an existing OpenCode config
+
+If you already have a working OpenCode setup, the wrapper can seed its runtime
+workspace from that config before LAP writes provider and agent-specific state.
+
+Set these environment variables on the container:
+
+| Var | Purpose |
+|-----|---------|
+| `OPENCODE_BASE_CONFIG_PATH` | path to a base `opencode.json` to copy into the runtime workspace at boot |
+| `OPENCODE_MEMORY_PLUGIN_CONFIG_PATH` | optional path to a `memory-plugin.json` file copied to `.opencode/memory-plugin.json` |
+
+This preserves top-level settings such as `experimental`, `plugin`, and any
+static MCP entries in the base config. LAP still rebuilds agent-attached
+`mcp_servers` on each change, so agent MCPs stay authoritative.
+
+For plugin packages or local plugin directories, mount your OpenCode home into
+the container as `/root/.config/opencode` so `opencode serve` can resolve the
+same plugin dependencies it uses outside LAP.
 
 ## Environment variables
 
@@ -109,6 +143,10 @@ BASE=http://localhost:8080 MODEL=gpt-5.5 ./scripts/smoke.sh
 | `LITELLM_BASE_URL` | — | LiteLLM gateway base URL (include `/v1`) |
 | `LITELLM_API_KEY` | — | LiteLLM gateway key |
 | `LITELLM_MODELS` | — | optional comma-separated models to pre-register in opencode |
+| `OPENCODE_PROVIDER_ID` | — | optional authenticated built-in provider id such as `opencode-go`; takes precedence over LiteLLM for model listing and bare model normalization |
+| `OPENCODE_AUTH_JSON_PATH` | — | host path to the OpenCode `auth.json` file when using Docker Compose with an authenticated provider |
+| `OPENCODE_BASE_CONFIG_PATH` | — | optional base `opencode.json` to seed before LAP merges provider/agent config |
+| `OPENCODE_MEMORY_PLUGIN_CONFIG_PATH` | — | optional `memory-plugin.json` copied into `.opencode/` at boot |
 | `OPENSANDBOX_API_URL` | — | OpenSandbox controller URL (enables sandboxed execution) |
 | `OPENSANDBOX_API_KEY` | — | OpenSandbox API key |
 | `OPENSANDBOX_IMAGE` | — | sandbox execd image |

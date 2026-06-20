@@ -4,6 +4,10 @@ Scaffold a new `templates/<name>/` — a Node.js/Express server that exposes a n
 
 When done, any LAP SDK client can drive the new runtime by changing only `api_base`/`api_key`.
 
+Every new template must adopt the shared workspace discovery rules in
+`templates/WORKSPACE_CONTRACT.md`. Do not invent runtime-specific rule/skill
+discovery.
+
 ---
 
 ## Step 1: Interview
@@ -67,6 +71,14 @@ templates/<name>/
     eks-deployment.md
     eks-deploy-prompt.md
 ```
+
+Before writing code, read `templates/WORKSPACE_CONTRACT.md` and bake it into
+the template:
+
+- honor session environment workspace fields first
+- honor `LAP_DEFAULT_WORKSPACE` as the container-level fallback
+- distinguish authoritative rules from skills
+- mount a real workspace in local compose examples
 
 ---
 
@@ -155,6 +167,9 @@ Accept partial updates to `{name, model, system, permissions, mcp_servers}`. Pat
 ### 4.7 Create environment — `POST /v1/environments`
 
 Lightweight: generate an `env_<hex>` ID, store `{name, config}` in memory (or SQLite), return it. Environments are workspace configs; the runtime doesn't need to act on them at creation time.
+
+The runtime must later use the stored environment config when resolving the
+workspace root for a session.
 
 ### 4.8 Create session — `POST /v1/sessions`
 
@@ -287,6 +302,19 @@ async function rebootRuntime() {
   rt = await serialize(() => restartRuntime(rt, { port: RT_PORT, cwd: WORKDIR }));
 }
 ```
+
+### 4.20 Workspace contract
+
+Every runtime template must implement the shared workspace contract:
+
+1. Resolve workspace root from session environment config first.
+2. Fall back to `LAP_DEFAULT_WORKSPACE`.
+3. Fall back to the runtime's scratch workdir only if no real workspace exists.
+4. Treat `AGENTS.md`, `CLAUDE.md`, `CODING_STANDARDS.md`, and `.agent/rules/`
+   as rules.
+5. Treat `.agent/skills/` and `skills/` as skills.
+6. Explicitly tell the runtime that skills are not rules.
+7. Avoid writing generated instruction files into the user's repo unless asked.
 
 ---
 

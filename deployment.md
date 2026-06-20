@@ -17,7 +17,7 @@ env var must be set at boot or startup fails.** Keep hosted configs minimal — 
 ### Provider credentials live in the database, not the config
 
 Do **not** put provider API keys in `config.yaml` / env vars. Add them through
-the **Settings UI** (`/settings`) or the API — they are stored encrypted in the
+the **Settings UI** (`/settings`) or the API; they are stored encrypted in the
 DB and injected per request:
 
 ```bash
@@ -27,13 +27,20 @@ curl -X POST $BASE/api/providers/anthropic \
 ```
 
 A model route with no `api_key` is valid **as long as a database is configured**
-(the key comes from the DB). Today only **anthropic** is in the credential
-catalog; other providers need a catalog entry before they can be DB-backed.
+(the key comes from the DB). Today **anthropic** and **openai** are in the
+credential catalog; other providers need a catalog entry before they can be
+DB-backed.
 
 > **One wildcard only.** The router supports exactly one `provider/*` wildcard
-> route. Reserve it for your primary provider (e.g. `anthropic/*`) and list other
-> providers' models explicitly. Two wildcards fail boot with
+> route. Reserve it for your primary provider (e.g. `anthropic/*`) and list
+> other providers' models explicitly. Two wildcards fail boot with
 > `only one wildcard model route is supported`.
+
+The hosted config in `deploy/render.config.yaml` follows that pattern:
+Anthropic gets the wildcard, OpenAI routes like `gpt-5.5`, `gpt-4.1`, and
+`gpt-4.1-mini` are listed one by one, and chat-completions providers like
+`gemini-3.5-flash`, `mistral-small-latest`, `groq-gpt-oss-20b`, and
+`cerebras-gpt-oss-120b` are also listed explicitly.
 
 ## Run locally
 
@@ -101,6 +108,10 @@ curl -s $BASE/v1/messages -H "Authorization: Bearer $KEY" -H "content-type: appl
 curl -s $BASE/v1/responses -H "Authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"model":"gpt-5.5","input":"Reply with exactly: ok",
        "max_output_tokens":32}'
+
+# /v1/chat/completions (Gemini, Mistral, Groq, Cerebras)
+curl -s $BASE/v1/chat/completions -H "Authorization: Bearer $KEY" -H "content-type: application/json" \
+  -d '{"model":"gemini-3.5-flash","messages":[{"role":"user","content":"Reply with exactly: ok"}]}'
 ```
 
 ### Gotchas (field-tested)

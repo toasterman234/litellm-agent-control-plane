@@ -22,6 +22,10 @@ impl Deployment {
     pub fn responses_url(&self) -> String {
         format!("{}/v1/responses", self.api_base.trim_end_matches('/'))
     }
+
+    pub fn chat_completions_url(&self) -> String {
+        format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
+    }
 }
 
 #[derive(Clone)]
@@ -217,6 +221,53 @@ mod tests {
         let router = Router::from_config(&config, &providers).unwrap();
         let route = router.resolve("anthropic/claude-opus-4-8").unwrap();
         assert_eq!(route.deployment.upstream_model, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn supports_one_wildcard_and_multiple_exact_provider_routes() {
+        let mut providers = ProviderRegistry::new();
+        providers::register_all(&mut providers);
+
+        let config = GatewayConfig {
+            model_list: vec![
+                ModelEntry {
+                    model_name: "anthropic/*".to_owned(),
+                    litellm_params: LiteLlmParams {
+                        model: "anthropic/*".to_owned(),
+                        api_key: Some("sk-ant".to_owned()),
+                        api_base: None,
+                        extra: Default::default(),
+                    },
+                },
+                ModelEntry {
+                    model_name: "gpt-5.5".to_owned(),
+                    litellm_params: LiteLlmParams {
+                        model: "openai/gpt-5.5".to_owned(),
+                        api_key: Some("sk-openai".to_owned()),
+                        api_base: None,
+                        extra: Default::default(),
+                    },
+                },
+                ModelEntry {
+                    model_name: "gpt-4.1".to_owned(),
+                    litellm_params: LiteLlmParams {
+                        model: "openai/gpt-4.1".to_owned(),
+                        api_key: Some("sk-openai".to_owned()),
+                        api_base: None,
+                        extra: Default::default(),
+                    },
+                },
+            ],
+            mcp_servers: Default::default(),
+            general_settings: Default::default(),
+            slack: Default::default(),
+            agents: Vec::new(),
+        };
+
+        let router = Router::from_config(&config, &providers).unwrap();
+        let route = router.resolve("gpt-4.1").unwrap();
+        assert_eq!(route.deployment.provider_id, "openai");
+        assert_eq!(route.deployment.upstream_model, "gpt-4.1");
     }
 
     #[test]

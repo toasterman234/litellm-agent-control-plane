@@ -5,13 +5,51 @@ model_list:
       api_key: os.environ/ANTHROPIC_API_KEY
       api_base: https://api.anthropic.com
 
-  # OpenAI Responses API — used by Codex (CLI + Mac app). `lite codex` points
-  # Codex here; requests land on POST /v1/responses.
-  - model_name: openai/*
+  # OpenAI Responses API, used by Codex (CLI + Mac app). Keep OpenAI routes
+  # explicit because only one wildcard model route is supported.
+  - model_name: gpt-5.5
     litellm_params:
-      model: openai/*
+      model: openai/gpt-5.5
       api_key: os.environ/OPENAI_API_KEY
       api_base: https://api.openai.com
+  - model_name: gpt-4.1
+    litellm_params:
+      model: openai/gpt-4.1
+      api_key: os.environ/OPENAI_API_KEY
+      api_base: https://api.openai.com
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+      api_base: https://api.openai.com
+
+  # Free-provider chat-completions routes. Keep these explicit because only
+  # one wildcard model route is supported.
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini_chat/gemini-3.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+      api_base: https://generativelanguage.googleapis.com/v1beta/openai
+  - model_name: mistral-small-latest
+    litellm_params:
+      model: mistral/mistral-small-latest
+      api_key: os.environ/MISTRAL_API_KEY
+      api_base: https://api.mistral.ai/v1
+  - model_name: groq-gpt-oss-20b
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+      api_base: https://api.groq.com/openai/v1
+  - model_name: groq-llama-3.1-8b-instant
+    litellm_params:
+      model: groq/llama-3.1-8b-instant
+      api_key: os.environ/GROQ_API_KEY
+      api_base: https://api.groq.com/openai/v1
+  - model_name: cerebras-gpt-oss-120b
+    litellm_params:
+      model: cerebras/gpt-oss-120b
+      api_key: os.environ/CEREBRAS_API_KEY
+      api_base: https://api.cerebras.ai/v1
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

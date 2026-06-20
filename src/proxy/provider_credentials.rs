@@ -11,11 +11,20 @@ use crate::{
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const CURSOR_PROVIDER_ID: &str = "cursor";
 pub const GEMINI_PROVIDER_ID: &str = "gemini";
+pub const GEMINI_CHAT_PROVIDER_ID: &str = "gemini_chat";
+pub const GROQ_PROVIDER_ID: &str = "groq";
+pub const MISTRAL_PROVIDER_ID: &str = "mistral";
+pub const CEREBRAS_PROVIDER_ID: &str = "cerebras";
 pub const OPENAI_PROVIDER_ID: &str = "openai";
 pub const ELASTIC_PROVIDER_ID: &str = "elastic";
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_CURSOR_BASE_URL: &str = "https://api.cursor.com";
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
+const DEFAULT_GEMINI_CHAT_BASE_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/openai";
+const DEFAULT_GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
+const DEFAULT_MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
+const DEFAULT_CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_ELASTIC_BASE_URL: &str = "http://localhost:5601";
 
@@ -48,6 +57,34 @@ pub const PROVIDER_CATALOG: &[ProviderCatalogEntry] = &[
         name: "OpenAI",
         description: "GPT models through the OpenAI Responses API",
         default_base_url: DEFAULT_OPENAI_BASE_URL,
+        category: ProviderCategory::Model,
+    },
+    ProviderCatalogEntry {
+        id: GROQ_PROVIDER_ID,
+        name: "Groq",
+        description: "Groq models through the OpenAI-compatible Chat Completions API",
+        default_base_url: DEFAULT_GROQ_BASE_URL,
+        category: ProviderCategory::Model,
+    },
+    ProviderCatalogEntry {
+        id: MISTRAL_PROVIDER_ID,
+        name: "Mistral",
+        description: "Mistral models through the OpenAI-compatible Chat Completions API",
+        default_base_url: DEFAULT_MISTRAL_BASE_URL,
+        category: ProviderCategory::Model,
+    },
+    ProviderCatalogEntry {
+        id: CEREBRAS_PROVIDER_ID,
+        name: "Cerebras",
+        description: "Cerebras models through the OpenAI-compatible Chat Completions API",
+        default_base_url: DEFAULT_CEREBRAS_BASE_URL,
+        category: ProviderCategory::Model,
+    },
+    ProviderCatalogEntry {
+        id: GEMINI_CHAT_PROVIDER_ID,
+        name: "Gemini Chat",
+        description: "Gemini models through the OpenAI-compatible Chat Completions API",
+        default_base_url: DEFAULT_GEMINI_CHAT_BASE_URL,
         category: ProviderCategory::Model,
     },
     ProviderCatalogEntry {
@@ -163,6 +200,31 @@ mod tests {
         let provider = catalog_entry("openai").unwrap();
         assert_eq!(provider.name, "OpenAI");
         assert_eq!(provider.default_base_url, "https://api.openai.com");
+    }
+
+    #[test]
+    fn catalog_includes_groq_mistral_and_cerebras() {
+        let groq = catalog_entry("groq").unwrap();
+        assert_eq!(groq.name, "Groq");
+        assert_eq!(groq.default_base_url, "https://api.groq.com/openai/v1");
+
+        let mistral = catalog_entry("mistral").unwrap();
+        assert_eq!(mistral.name, "Mistral");
+        assert_eq!(mistral.default_base_url, "https://api.mistral.ai/v1");
+
+        let cerebras = catalog_entry("cerebras").unwrap();
+        assert_eq!(cerebras.name, "Cerebras");
+        assert_eq!(cerebras.default_base_url, "https://api.cerebras.ai/v1");
+    }
+
+    #[test]
+    fn catalog_includes_gemini_chat() {
+        let provider = catalog_entry("gemini_chat").unwrap();
+        assert_eq!(provider.name, "Gemini Chat");
+        assert_eq!(
+            provider.default_base_url,
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
     }
 
     #[test]

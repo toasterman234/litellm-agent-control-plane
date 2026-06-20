@@ -156,7 +156,7 @@ The stream emits Anthropic-shaped event frames:
 | `PYDANTIC_DEEP_FILESYSTEM` | `true` | Enables filesystem tools |
 | `PYDANTIC_DEEP_SUBAGENTS` | `true` | Enables subagent tools |
 | `PYDANTIC_DEEP_SKILLS` | `true` | Enables skill tools |
-| `PYDANTIC_DEEP_MEMORY` | `true` | Enables persistent memory tools |
+| `PYDANTIC_DEEP_MEMORY` | `false` | Enables Pydantic Deep's filesystem-backed memory tools; leave off when LAP `agent_memory` is the canonical persistent memory layer |
 | `PYDANTIC_DEEP_WEB_SEARCH` | `true` | Enables web search tools |
 | `PYDANTIC_DEEP_WEB_FETCH` | `true` | Enables web fetch tools |
 | `PYDANTIC_DEEP_THINKING` | `false` in Anthropic gateway mode, otherwise `high` | Enables Pydantic Deep thinking effort; use `false`, `true`, or an effort like `low`, `medium`, `high` |

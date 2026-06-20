@@ -12,7 +12,9 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY skills ./skills
-RUN cargo build --release --bin lite
+# Limit compiler parallelism so peak memory fits the constrained Docker VM (~6GB).
+# Without this the default 16-way parallel build OOM-stalls on the heavy crates.
+RUN CARGO_BUILD_JOBS=2 CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo build --release --bin lite
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \

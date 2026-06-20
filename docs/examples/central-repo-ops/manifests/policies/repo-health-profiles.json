@@ -1,0 +1,49 @@
+{
+  "profiles": {
+    "default": {
+      "required_files": [
+        "README.md"
+      ],
+      "notes": [
+        "Verify the repository has a current README.",
+        "Verify at least one active automation or CI path exists."
+      ]
+    },
+    "wireai-right-now-mobile-app": {
+      "required_files": [
+        "README.md",
+        "HANDOFF.md",
+        "package.json",
+        "mobile/AGENTS.md",
+        "mobile/app.json",
+        "mobile/package.json",
+        "phase2-backend/requirements.txt"
+      ],
+      "notes": [
+        "Check that the Expo mobile app still declares an explicit SDK version and React Native dependency.",
+        "Check that the FastAPI bridge remains documented as the active backend path.",
+        "Check that the repo still separates mobile, mock-webhook, and phase2-backend responsibilities cleanly.",
+        "Check that local run instructions still mention the backend and mobile app startup sequence."
+      ]
+    },
+    "lap": {
+      "required_files": [
+        "readme.md",
+        "HANDOFF.md",
+        "AGENTS.md",
+        "CODING_STANDARDS.md",
+        "Cargo.toml",
+        "compose.yaml",
+        "config.yaml.example",
+        "docs/learn/mcp.mdx",
+        "templates/manifest.json"
+      ],
+      "notes": [
+        "Check that LAP still presents itself as the agent control plane and not a standalone LLM proxy.",
+        "Check that MCP support remains documented and aligned with the current route surface.",
+        "Check that runtime templates remain registered through templates/manifest.json.",
+        "Check that the repository still keeps core gateway behavior under src/ai_gateway and preserves the documented architecture boundaries."
+      ]
+    }
+  }
+}

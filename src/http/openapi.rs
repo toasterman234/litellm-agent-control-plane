@@ -51,7 +51,8 @@ fn openapi_spec(models: &[Value], model_enum_desc: &str) -> Value {
             "/api/capabilities": capabilities_path(),
             "/api/keys": keys_path(),
             "/api/keys/{id}": key_path(),
-            "/v1/messages": messages_path(models, model_enum_desc)
+            "/v1/messages": messages_path(models, model_enum_desc),
+            "/v1/chat/completions": chat_completions_path(models, model_enum_desc)
         },
         "components": components()
     })
@@ -203,6 +204,30 @@ fn messages_path(models: &[Value], model_enum_desc: &str) -> Value {
     })
 }
 
+fn chat_completions_path(models: &[Value], model_enum_desc: &str) -> Value {
+    json!({
+        "post": {
+            "summary": "Create a chat completion",
+            "operationId": "createChatCompletion",
+            "tags": ["Chat Completions"],
+            "security": [{ "BearerAuth": [] }],
+            "requestBody": {
+                "required": true,
+                "content": {
+                    "application/json": {
+                        "schema": chat_completions_schema(models, model_enum_desc)
+                    }
+                }
+            },
+            "responses": {
+                "200": { "description": "Chat completion response from upstream provider" },
+                "401": { "description": "Invalid or missing gateway key" },
+                "404": { "description": "Model not found in config" }
+            }
+        }
+    })
+}
+
 fn messages_schema(models: &[Value], model_enum_desc: &str) -> Value {
     json!({
         "type": "object",
@@ -226,6 +251,33 @@ fn messages_schema(models: &[Value], model_enum_desc: &str) -> Value {
                 "example": [{ "role": "user", "content": "Hello!" }]
             },
             "max_tokens": { "type": "integer", "example": 1024 },
+            "stream": { "type": "boolean", "example": false }
+        }
+    })
+}
+
+fn chat_completions_schema(models: &[Value], model_enum_desc: &str) -> Value {
+    json!({
+        "type": "object",
+        "required": ["model", "messages"],
+        "properties": {
+            "model": {
+                "type": "string",
+                "description": format!("Model alias from config. Available: {}", model_enum_desc),
+                "example": models.first().and_then(|v| v.as_str()).unwrap_or("gemini-3.5-flash")
+            },
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["role", "content"],
+                    "properties": {
+                        "role": { "type": "string", "enum": ["system", "user", "assistant", "tool"] },
+                        "content": { "type": "string" }
+                    }
+                },
+                "example": [{ "role": "user", "content": "Hello!" }]
+            },
             "stream": { "type": "boolean", "example": false }
         }
     })

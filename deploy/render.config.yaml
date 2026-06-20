@@ -9,9 +9,9 @@
 # on those routes.
 #
 # NOTE: the gateway supports exactly one "provider/*" wildcard route (reserved
-# for anthropic). gpt-5.5 is listed explicitly so Codex can use the OpenAI
-# Responses API without adding a second wildcard route. Provider API keys are
-# loaded from the database at request time.
+# for anthropic). OpenAI models are listed explicitly so Codex can use the
+# OpenAI Responses API without adding a second wildcard route. Provider API
+# keys are loaded from the database at request time.
 model_list:
   - model_name: anthropic/*
     litellm_params:
@@ -22,6 +22,31 @@ model_list:
     litellm_params:
       model: openai/gpt-5.5
       api_base: https://api.openai.com
+
+  - model_name: gpt-4.1
+    litellm_params:
+      model: openai/gpt-4.1
+      api_base: https://api.openai.com
+
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_base: https://api.openai.com
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: gemini_chat/gemini-3.5-flash
+      api_base: https://generativelanguage.googleapis.com/v1beta/openai
+
+  - model_name: mistral-small-latest
+    litellm_params:
+      model: mistral/mistral-small-latest
+      api_base: https://api.mistral.ai/v1
+
+  - model_name: cerebras-gpt-oss-120b
+    litellm_params:
+      model: cerebras/gpt-oss-120b
+      api_base: https://api.cerebras.ai/v1
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

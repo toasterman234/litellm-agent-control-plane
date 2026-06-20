@@ -13,6 +13,11 @@ Dockerfile, README, and tests — and keeps the new template consistent with the
 ones already here. Do not hand-roll a template from scratch; start from the
 skill.
 
+Every new template must also implement the shared
+[`WORKSPACE_CONTRACT.md`](./WORKSPACE_CONTRACT.md). That contract defines how
+rules, skills, and workspace roots are discovered across all runtimes. A
+template that does not follow it is incomplete.
+
 ## Registration
 
 Every template must be listed in [`manifest.json`](./manifest.json) — the

@@ -1,9 +1,11 @@
 //! Base contract for provider endpoint transformations.
 //!
-//! Implement this once per provider endpoint, such as Anthropic Messages or
-//! OpenAI Responses. Routing selects the implementation; HTTP owns networking.
+//! Implement this once per provider endpoint, such as Anthropic Messages,
+//! OpenAI Responses, or OpenAI-compatible Chat Completions. Routing selects
+//! the implementation; HTTP owns networking.
 
 pub mod anthropic_messages;
+pub mod chat_completions;
 pub(crate) mod models;
 pub mod openai_responses;
 pub(crate) mod runtime;
@@ -35,6 +37,10 @@ pub trait Transformation: Send + Sync + 'static {
         deployment.messages_url()
     }
 
+    fn chat_completions_url(&self, deployment: &Deployment) -> String {
+        deployment.chat_completions_url()
+    }
+
     fn transform_messages_request(
         &self,
         body: Value,
@@ -53,6 +59,38 @@ pub trait Transformation: Send + Sync + 'static {
     }
 
     fn transform_messages_response_body(
+        &self,
+        body: Vec<u8>,
+        _status: StatusCode,
+        _stream: bool,
+        _deployment: &Deployment,
+        _content_type: Option<&str>,
+    ) -> Result<Vec<u8>, GatewayError> {
+        Ok(body)
+    }
+
+    fn transform_chat_completions_request(
+        &self,
+        body: Value,
+        deployment: &Deployment,
+        inbound_headers: &HeaderMap,
+    ) -> Result<ProviderRequest, GatewayError> {
+        self.transform_request(body, deployment, inbound_headers)
+    }
+
+    fn transform_chat_completions_response_headers(
+        &self,
+        upstream: &HeaderMap,
+        stream: bool,
+    ) -> HeaderMap {
+        self.transform_response_headers(upstream, stream)
+    }
+
+    fn transforms_chat_completions_response_body(&self) -> bool {
+        false
+    }
+
+    fn transform_chat_completions_response_body(
         &self,
         body: Vec<u8>,
         _status: StatusCode,

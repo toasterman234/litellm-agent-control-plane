@@ -55,6 +55,17 @@ const DEFAULT_TOOLS: AgentTool[] = [
   { type: "web_fetch" },
   { type: "web_search" },
 ];
+const MEMORY_AWARE_STARTUP_POLICY =
+  "When a request depends on prior discussion, earlier decisions, or in-flight work, first recover context before answering from scratch: check recent platform session history and durable agent memory early, use what you find, and say when you are relying on recovered context. If context is missing, say what you could not recover and ask a narrow follow-up only when that gap blocks a good answer.";
+
+function withMemoryAwareStartup(system: string): string {
+  const trimmed = system.trim();
+  if (!trimmed) return MEMORY_AWARE_STARTUP_POLICY;
+  if (trimmed.includes("check recent platform session history") || trimmed.includes("durable agent memory")) {
+    return trimmed;
+  }
+  return `${trimmed} ${MEMORY_AWARE_STARTUP_POLICY}`;
+}
 
 function baseDraft(): AgentDraft {
   return {
@@ -63,8 +74,9 @@ function baseDraft(): AgentDraft {
     model: "",
     runtime: DEFAULT_RUNTIME,
     owner_id: DEFAULT_OWNER,
-    system:
+    system: withMemoryAwareStartup(
       "You are a general-purpose agent. Research, write, run commands, and use connected tools to complete the user's task end to end. State assumptions clearly, keep progress visible, and ask for missing credentials only when blocked.",
+    ),
     tools: DEFAULT_TOOLS.map((tool) => ({ ...tool })),
     cron: "",
     timezone: DEFAULT_TIMEZONE,
@@ -106,6 +118,7 @@ function withDraft(patch: Partial<AgentDraft>): AgentDraft {
   return {
     ...baseDraft(),
     ...patch,
+    ...(patch.system ? { system: withMemoryAwareStartup(patch.system) } : {}),
     tools: (patch.tools ?? DEFAULT_TOOLS).map((tool) => ({ ...tool })),
     vault_keys: [...(patch.vault_keys ?? [])],
     skill_ids: [...(patch.skill_ids ?? [])],
@@ -137,6 +150,34 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     }),
   },
   {
+    id: "opencode-agent",
+    title: "OpenCode agent",
+    description: "Code-focused agent preset wired to the OpenCode bridge runtime.",
+    tags: ["coding", "opencode"],
+    draft: withDraft({
+      name: "OpenCode Agent",
+      description: "Plans, edits, and verifies code changes with the OpenCode runtime.",
+      runtime: "opencode-anthropic",
+      system:
+        "You are a coding agent running on the OpenCode bridge runtime. Inspect the repository before editing, make the smallest effective change, verify behavior with the strongest available checks, and keep implementation notes concise and actionable.",
+      max_runtime_minutes: 60,
+    }),
+  },
+  {
+    id: "pydantic-deep-agent",
+    title: "Pydantic Deep agent",
+    description: "Meta-agent preset for orchestration, delegation, research, agent design, and complex execution.",
+    tags: ["pydantic", "deep-agents", "planning", "meta-agent", "orchestration"],
+    draft: withDraft({
+      name: "Pydantic Deep Meta Agent",
+      description: "Acts as a meta agent that decomposes work, delegates deliberately, researches deeply, edits files, and improves agent systems with approval.",
+      runtime: "pydantic-deepagents",
+      system:
+        "You are the primary meta agent for LAP workflows running on the Pydantic Deep Agents runtime. Operate as strategist, orchestrator, researcher, and hands-on builder. Break complex work into explicit milestones, decide what to solve directly versus what to delegate, and use subagents, attached agents, MCP tools, and skills deliberately when they improve quality or speed. You may design, create, edit, and optimize agents, rules, prompts, configs, and files when that is the best path. You may improve yourself and other agents, but ask for explicit approval before any durable self-modification, persistent prompt/profile change, broad multi-agent restructuring, or other hard-to-reverse change. Keep intermediate state visible, synthesize delegated results back into one coherent outcome, and finish with a crisp summary of findings, actions taken, risks, and next steps.",
+      max_runtime_minutes: 60,
+    }),
+  },
+  {
     id: "inbox-triage",
     title: "Inbox triage",
     description: "Categorizes messages, flags urgency, and drafts replies.",
@@ -161,6 +202,19 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
       system:
         "You are a meticulous security reviewer. Inspect code changes, dependency updates, configuration, authentication flows, and data handling. Prioritize exploitable risks, include file-level evidence when available, and separate blocking issues from hardening suggestions.",
       vault_keys: ["GITHUB_TOKEN"],
+    }),
+  },
+  {
+    id: "agent-architect",
+    title: "Agent architect",
+    description: "Designs new agents, reviews existing ones, and turns requirements into runnable LAP configs.",
+    tags: ["agents", "architecture", "builder"],
+    draft: withDraft({
+      name: "Agent Architect",
+      description: "Designs agent systems and turns requirements into concrete LAP agent configs.",
+      system:
+        "You are an agent architect for LAP. Turn vague requests into well-scoped agents, teams, and workflows that can actually run in this environment. Start by clarifying the goal, success criteria, failure modes, and required approvals. Inspect the existing agent, skill, rule, runtime, and integration context before recommending changes. Only use capabilities that are actually available in the current runtime and connected integrations. When you design or revise an agent, explain the role breakdown, runtime choice, model choice, tool and MCP needs, schedule, memory assumptions, and guardrails. Prefer drafting a concrete config plus a short rationale over vague advice. Before any irreversible action, summarize the proposed change, call out assumptions, and wait for explicit approval. Every design should include how it will be validated, what could go wrong, and what the smallest safe first version looks like.",
+      max_runtime_minutes: 60,
     }),
   },
   {
@@ -220,6 +274,10 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
   },
 ];
 
+function templateById(id: string): AgentTemplate {
+  return AGENT_TEMPLATES.find((template) => template.id === id) ?? AGENT_TEMPLATES[0];
+}
+
 function unique(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
@@ -263,14 +321,23 @@ function sentence(value: string): string {
 
 export function agentTemplateForPrompt(prompt: string): AgentTemplate {
   const lower = prompt.toLowerCase();
-  if (/(inbox|email|gmail|triage|reply)/.test(lower)) return AGENT_TEMPLATES[2];
-  if (/(security|vulnerab|auth|permissions|review code|code review)/.test(lower)) return AGENT_TEMPLATES[3];
-  if (/(incident|alert|on.?call|sentry|pager|outage)/.test(lower)) return AGENT_TEMPLATES[5];
-  if (/(support|customer|ticket|intercom|zendesk|docs? answer)/.test(lower)) return AGENT_TEMPLATES[4];
-  if (/(data|dataset|sql|dashboard|report|metric|analytics)/.test(lower)) return AGENT_TEMPLATES[6];
-  if (/(retro|sprint|linear|jira|standup)/.test(lower)) return AGENT_TEMPLATES[7];
-  if (/(research|brief|summar|scan|monitor|track)/.test(lower)) return AGENT_TEMPLATES[1];
-  return AGENT_TEMPLATES[0];
+  if (/(opencode|open\s*code)/.test(lower)) return templateById("opencode-agent");
+  if (/(pydantic\s+deep|pydantic-deep|pydantic\s+deepagents|pydantic-deepagents)/.test(lower)) {
+    return templateById("pydantic-deep-agent");
+  }
+  if (/(architect|builder|design (an?|the)? agent|agent design|agent system|workflow design)/.test(lower)) {
+    return templateById("agent-architect");
+  }
+  if (/(inbox|email|gmail|triage|reply)/.test(lower)) return templateById("inbox-triage");
+  if (/(security|vulnerab|auth|permissions|review code|code review)/.test(lower)) {
+    return templateById("security-reviewer");
+  }
+  if (/(incident|alert|on.?call|sentry|pager|outage)/.test(lower)) return templateById("incident-commander");
+  if (/(support|customer|ticket|intercom|zendesk|docs? answer)/.test(lower)) return templateById("support-agent");
+  if (/(data|dataset|sql|dashboard|report|metric|analytics)/.test(lower)) return templateById("data-analyst");
+  if (/(retro|sprint|linear|jira|standup)/.test(lower)) return templateById("sprint-retro");
+  if (/(research|brief|summar|scan|monitor|track)/.test(lower)) return templateById("deep-researcher");
+  return templateById("blank");
 }
 
 function vaultKeysForPrompt(prompt: string): string[] {

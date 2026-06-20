@@ -3,7 +3,7 @@
 // opencode-compatible wrapper server. Node 20 ESM, built-ins + global fetch only.
 
 import { spawn, execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -17,6 +17,8 @@ function withJsonLock(fn) {
 }
 
 const execFileP = promisify(execFile);
+const STATIC_MCP_STATE_FILE = path.join(".opencode", "lap-static-mcp.json");
+const DEFAULT_WORKSPACE_LINK = path.join("workspace");
 
 // opencode only scans custom agents (`.opencode/agent/*.md`) and per-project
 // config when the workspace is a git project. Initialise one (idempotent) with
@@ -79,6 +81,61 @@ export function writeProviderConfig(cwd, { id = "openai", name = "LiteLLM", base
   });
 }
 
+async function writeStaticMcpState(cwd, names) {
+  const statePath = path.join(cwd, STATIC_MCP_STATE_FILE);
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(statePath, JSON.stringify({ names }, null, 2), "utf8");
+}
+
+async function readStaticMcpState(cwd) {
+  const statePath = path.join(cwd, STATIC_MCP_STATE_FILE);
+  try {
+    const raw = JSON.parse(await readFile(statePath, "utf8"));
+    return new Set(Array.isArray(raw?.names) ? raw.names.filter((name) => typeof name === "string" && name) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export async function seedBaseConfig(
+  cwd,
+  {
+    baseConfigPath = null,
+    memoryPluginConfigPath = null,
+  } = {}
+) {
+  const staticMcpNames = [];
+
+  if (baseConfigPath) {
+    const raw = await readFile(baseConfigPath, "utf8");
+    const parsed = JSON.parse(raw);
+    await mkdir(cwd, { recursive: true });
+    await writeFile(path.join(cwd, "opencode.json"), JSON.stringify(parsed, null, 2), "utf8");
+    staticMcpNames.push(
+      ...Object.keys(parsed?.mcp || {}).filter((name) => typeof name === "string" && name !== "sandbox")
+    );
+  }
+
+  if (memoryPluginConfigPath) {
+    const dest = path.join(cwd, ".opencode", "memory-plugin.json");
+    await mkdir(path.dirname(dest), { recursive: true });
+    await copyFile(memoryPluginConfigPath, dest);
+  }
+
+  await writeStaticMcpState(cwd, [...new Set(staticMcpNames)].sort());
+}
+
+export async function ensureWorkspaceMirror(cwd, workspaceRoot) {
+  if (!workspaceRoot) return null;
+  const linkPath = path.join(cwd, DEFAULT_WORKSPACE_LINK);
+  try {
+    await rm(linkPath, { recursive: true, force: true });
+  } catch {}
+  await mkdir(cwd, { recursive: true });
+  await symlink(workspaceRoot, linkPath, "dir");
+  return linkPath;
+}
+
 export function ensureProviderModel(cwd, { providerID, modelID }) {
   if (!providerID || !modelID) return Promise.resolve();
   return withJsonLock(async () => {
@@ -103,11 +160,12 @@ export function ensureProviderModel(cwd, { providerID, modelID }) {
 // Returns { baseUrl, proc, stop() }
 export async function startOpencode({ port = 4096, cwd, env } = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
+  const opencodeBin = env?.OPENCODE_BIN || process.env.OPENCODE_BIN || "opencode";
   // Bind 0.0.0.0 so our loopback health probe connects regardless of the
   // platform's IPv4/IPv6 loopback resolution (a 127.0.0.1-only bind made the
   // in-process fetch hang on some hosts). The port is internal (not exposed).
   const proc = spawn(
-    "opencode",
+    opencodeBin,
     ["serve", "--port", String(port), "--hostname", "0.0.0.0"],
     { cwd, env: { ...process.env, ...env }, stdio: "inherit" }
   );
@@ -189,7 +247,18 @@ export async function provisionAgent(cwd, agent) {
     }
   }
 
-  const body = agent?.system || "";
+  const workspaceRoot = process.env.LAP_DEFAULT_WORKSPACE || "";
+  const workspaceContract = workspaceRoot
+    ? [
+        `Workspace root: ${workspaceRoot}`,
+        "Mirrored in this runtime as ./workspace",
+        "Rules: inspect workspace/AGENTS.md, workspace/CLAUDE.md, workspace/CODING_STANDARDS.md, and workspace/.agent/rules/ first.",
+        "Skills: inspect workspace/.agent/skills/ and workspace/skills/.",
+        "Skills are not rules unless a rule file explicitly makes them mandatory.",
+        "",
+      ].join("\n")
+    : "";
+  const body = [agent?.system || "", workspaceContract].filter(Boolean).join("\n\n");
   const md = `---\n${lines.join("\n")}\n---\n${body}`;
   const agentFile = path.join(agentDir, `${agent.id}.md`);
   await writeFile(agentFile, md, "utf8");
@@ -208,8 +277,12 @@ export function writeMcpConfig(cwd, agents) {
     obj = {};
   }
   const mcp = {};
+  const staticMcpNames = await readStaticMcpState(cwd);
   // Preserve the server-level sandbox MCP (not an agent's own server) across rebuilds.
   if (obj.mcp?.sandbox) mcp.sandbox = obj.mcp.sandbox;
+  for (const name of staticMcpNames) {
+    if (obj.mcp?.[name]) mcp[name] = obj.mcp[name];
+  }
   for (const agent of agents || []) {
     for (const server of agent?.mcp_servers || []) {
       if (!server || !server.name || server.name === "sandbox") continue;

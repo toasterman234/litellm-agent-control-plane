@@ -1,0 +1,19 @@
+{
+  "exceptions": [
+    {
+      "repo_id": "wireai-right-now-mobile-app",
+      "disabled_operations": [],
+      "notes": "First pilot repo. Start with repo-health. Update the placeholder GitHub slug once the local app folder is connected to its real remote."
+    },
+    {
+      "repo_id": "lap",
+      "disabled_operations": [],
+      "notes": "Platform repo stays in pilot and always requires review."
+    },
+    {
+      "repo_id": "docs-site",
+      "disabled_operations": ["dependency-rollout", "stale-triage"],
+      "notes": "Docs repo is read-only in the scaffold."
+    }
+  ]
+}

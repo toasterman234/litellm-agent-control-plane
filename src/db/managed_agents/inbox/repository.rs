@@ -64,6 +64,27 @@ pub async fn pending_approvals(pool: &PgPool) -> Result<Vec<InboxItemRow>, Gatew
     .map_err(GatewayError::Database)
 }
 
+/// True if at least one approval for this session has been accepted by a human.
+/// Used to gate durable/destructive agent tools (e.g. create_managed_agent)
+/// behind explicit human approval.
+pub async fn has_accepted_approval_for_session(
+    pool: &PgPool,
+    session_id: &str,
+) -> Result<bool, GatewayError> {
+    let (count,): (i64,) = sqlx::query_as(
+        r#"
+        SELECT count(*)
+        FROM "LiteLLM_ManagedAgentInboxItemsTable"
+        WHERE kind = 'approval' AND status = 'accepted' AND session_id = $1
+        "#,
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .map_err(GatewayError::Database)?;
+    Ok(count > 0)
+}
+
 pub async fn get(pool: &PgPool, item_id: &str) -> Result<Option<InboxItemRow>, GatewayError> {
     sqlx::query_as::<_, InboxItemRow>(
         r#"

@@ -17,12 +17,24 @@ fn sdk_tree_matches_provider_endpoint_contract() {
     assert_eq!(dirs(&sdk), set(["agents", "providers"]));
     assert_eq!(
         dirs(&providers),
-        set(["anthropic", "base", "cursor", "elastic", "gemini", "openai"])
+        set([
+            "anthropic",
+            "base",
+            "cerebras",
+            "cursor",
+            "elastic",
+            "gemini",
+            "gemini_chat",
+            "groq",
+            "mistral",
+            "openai",
+        ])
     );
     assert_eq!(
         files(&providers.join("base")),
         set([
             "anthropic_messages.rs",
+            "chat_completions.rs",
             "mod.rs",
             "models.rs",
             "openai_responses.rs",
@@ -36,9 +48,13 @@ fn sdk_tree_matches_provider_endpoint_contract() {
         "openai",
         ["anthropic_messages", "openai_responses"],
     );
+    assert_provider(&providers, "cerebras", ["chat_completions"]);
     assert_provider(&providers, "cursor", ["runtime"]);
     assert_elastic_provider(&providers);
     assert_provider(&providers, "gemini", ["runtime"]);
+    assert_provider(&providers, "gemini_chat", ["chat_completions"]);
+    assert_provider(&providers, "groq", ["chat_completions"]);
+    assert_provider(&providers, "mistral", ["chat_completions"]);
 
     let providers_mod = fs::read_to_string(providers.join("mod.rs")).unwrap();
     assert!(!providers_mod.contains("AgentRuntime::"));

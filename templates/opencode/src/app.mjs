@@ -23,7 +23,7 @@ import {
  * @param {object} deps.store                 agent/session store (see store.mjs)
  * @param {string} deps.workdir               opencode workspace dir
  * @param {string|null} deps.defaultModelProviderID  provider for bare model names
- * @param {string} deps.litellmProviderID     provider id treated as LiteLLM
+ * @param {string|null} deps.registeredModelProviderID provider id that needs opencode.json model registration
  * @param {(cwd, model) => Promise} deps.ensureProviderModel  register a model in opencode.json
  * @param {(cwd, agent) => Promise} deps.provisionAgent       write the agent .md
  * @param {(cwd, agents) => Promise} deps.writeMcpConfig      rebuild mcp section
@@ -37,7 +37,7 @@ export function createApp({
   store,
   workdir,
   defaultModelProviderID,
-  litellmProviderID,
+  registeredModelProviderID,
   listModels = async () => ({ object: "list", data: [] }),
   ensureProviderModel,
   provisionAgent,
@@ -163,6 +163,13 @@ export function createApp({
   // version emits (e.g. what its end-of-turn signal looks like).
   const DEBUG_EVENTS = process.env.DEBUG_EVENTS === "1";
 
+  function delay(ms) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref?.();
+    });
+  }
+
   // ---- global event pump ----------------------------------------------------
   // ONE permanent subscription to opencode's /event feed, persisting translated
   // events for every bound session. Replaces the old per-turn capture loops,
@@ -171,6 +178,10 @@ export function createApp({
   // terminal idle dropped, leaving clients in "running" forever).
   let pumpStarted = false;
   let pumpConnected = false;
+
+  function sessionMessagePath(sessionId) {
+    return `/session/${sessionId}/message`;
+  }
 
   function pumpHandle(raw) {
     const sid = rawSessionId(raw);
@@ -223,7 +234,7 @@ export function createApp({
           console.error("[pump] /event stream error:", err?.message || err);
         }
         pumpConnected = false;
-        await new Promise((r) => setTimeout(r, 1500));
+        await delay(1500);
       }
     })();
   }
@@ -232,7 +243,7 @@ export function createApp({
     ensureEventPump();
     const deadline = Date.now() + timeoutMs;
     while (!pumpConnected && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 200));
+      await delay(200);
     }
     return pumpConnected;
   }
@@ -257,6 +268,123 @@ export function createApp({
       turn.terminal = true;
       clearInterval(watchdog);
     }, 2000);
+    watchdog.unref?.();
+  }
+
+  function persistAssistantMessage(sessionId, turnId, message, model) {
+    const info = message?.info || {};
+    if (info.role !== "assistant") return false;
+
+    let persisted = false;
+    for (const part of Array.isArray(message?.parts) ? message.parts : []) {
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "reasoning" && part.text) {
+        persisted =
+          persistEvent(
+            sessionId,
+            { type: "agent.reasoning", properties: part },
+            {
+              event: "agent.thinking",
+              data: {
+                messageID: part.messageID,
+                partID: part.id,
+                sessionID: part.sessionID,
+                thinking: part.text,
+                content: [{ type: "thinking", text: part.text }],
+                model: model || null,
+              },
+            },
+            turnId
+          ) || persisted;
+        continue;
+      }
+
+      if (part.type === "text" && part.text) {
+        persisted =
+          persistEvent(
+            sessionId,
+            { type: "message.part.updated", properties: part },
+            {
+              event: "agent.message",
+              data: {
+                messageID: part.messageID,
+                partID: part.id,
+                sessionID: part.sessionID,
+                content: [{ type: "text", text: part.text }],
+                model: model || null,
+              },
+            },
+            turnId
+          ) || persisted;
+      }
+    }
+
+    const completed = info.time?.completed;
+    if (completed) {
+      persistedEvent(sessionId, turnId);
+      persisted = true;
+    }
+
+    return persisted;
+  }
+
+  function persistedEvent(sessionId, turnId) {
+    persistEvent(
+      sessionId,
+      {
+        type: "message.updated",
+        properties: {
+          info: {
+            role: "assistant",
+            time: { completed: Date.now() },
+          },
+        },
+      },
+      {
+        event: "session.status_idle",
+        data: { stop_reason: { type: "end_turn" } },
+      },
+      turnId
+    );
+  }
+
+  async function pollSessionMessages(sessionId, turnId, { model, startedAt }) {
+    const deadline = Date.now() + Math.max(IDLE_FALLBACK_MS * 2, 60_000);
+    const seenAssistantIds = new Set();
+
+    while (Date.now() < deadline) {
+      const turn = activeTurns.get(sessionId);
+      if (!turn || turn.id !== turnId || turn.terminal) return;
+
+      try {
+        const res = await ocFetch(await ocBase(), sessionMessagePath(sessionId), {});
+        if (res.ok) {
+          const messages = await res.json().catch(() => []);
+          for (const message of Array.isArray(messages) ? messages : []) {
+            const info = message?.info || {};
+            if (info.role !== "assistant" || !info.id) continue;
+            if (seenAssistantIds.has(info.id)) continue;
+            if ((info.time?.created || 0) < startedAt) continue;
+            if (!info.time?.completed) continue;
+            seenAssistantIds.add(info.id);
+            persistAssistantMessage(sessionId, turnId, message, model);
+          }
+        }
+      } catch (err) {
+        console.warn(`[poll] ${sessionId}:`, err?.message || err);
+      }
+
+      const updatedTurn = activeTurns.get(sessionId);
+      if (updatedTurn?.terminal) return;
+      await delay(1000);
+    }
+  }
+
+  async function armMessageFallback(sessionId, turnId, { model, startedAt }) {
+    await delay(1200);
+    const turn = activeTurns.get(sessionId);
+    if (!turn || turn.id !== turnId || turn.terminal) return;
+    await pollSessionMessages(sessionId, turnId, { model, startedAt });
   }
 
   // ---- agents -------------------------------------------------------------
@@ -268,7 +396,7 @@ export function createApp({
   async function applyAgentsAndReboot(provisionRow) {
     if (provisionRow) {
       const model = opencodeModel(provisionRow.model, defaultModelProviderID);
-      if (model?.providerID === litellmProviderID) {
+      if (model?.providerID === registeredModelProviderID) {
         await ensureProviderModel(workdir, model);
       }
       await provisionAgent(workdir, {
@@ -387,13 +515,14 @@ export function createApp({
     const parts = partsFromEvents(req.body?.events || []);
     if (!parts.length) return res.status(400).json({ error: "no user.message parts" });
 
-    // The pump must be subscribed before prompting so no early events are lost.
-    if (!(await waitForPump())) {
-      return res.status(502).json({ error: "opencode event stream unavailable" });
-    }
+    // Newer opencode versions no longer stream turn events on the global
+    // /event feed reliably. Start the pump best-effort, but do not block turns
+    // on it: a message-store poller below recovers completed assistant output.
+    void waitForPump(1500).catch(() => false);
 
     const turnId = "turn_" + crypto.randomBytes(12).toString("hex");
-    activeTurns.set(req.params.id, { id: turnId, terminal: false, lastActivity: Date.now() });
+    const startedAt = Date.now();
+    activeTurns.set(req.params.id, { id: turnId, terminal: false, lastActivity: startedAt });
 
     // Persist the user's message before prompting so the turn always starts
     // with it in the replay, regardless of how fast agent events arrive.
@@ -422,6 +551,10 @@ export function createApp({
     }
 
     armTurnWatchdog(req.params.id, turnId);
+    void armMessageFallback(req.params.id, turnId, {
+      model: agent?.model || null,
+      startedAt,
+    });
 
     res.status(202).json({ ok: true });
   }));

@@ -1,0 +1,19 @@
+{
+  "tiers": {
+    "core": {
+      "requires_human_review": true,
+      "allow_auto_close_stale": false,
+      "allow_dependency_rollout": true
+    },
+    "standard": {
+      "requires_human_review": true,
+      "allow_auto_close_stale": false,
+      "allow_dependency_rollout": true
+    },
+    "experimental": {
+      "requires_human_review": true,
+      "allow_auto_close_stale": false,
+      "allow_dependency_rollout": false
+    }
+  }
+}

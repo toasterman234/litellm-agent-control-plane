@@ -1,0 +1,80 @@
+name: Dependency Rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      wave:
+        description: "Wave manifest to use"
+        required: true
+        default: "pilot"
+        type: choice
+        options:
+          - pilot
+          - broad-rollout
+          - frozen
+      dependency_name:
+        description: "Dependency or standards bundle name"
+        required: true
+        type: string
+      ref:
+        description: "Target branch or ref"
+        required: true
+        default: "main"
+        type: string
+      dry_run:
+        description: "Skip live dispatches"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs/examples/central-repo-ops
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node scripts/validate-manifest.mjs .
+
+  resolve:
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.render.outputs.matrix }}
+    defaults:
+      run:
+        working-directory: docs/examples/central-repo-ops
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - id: render
+        run: |
+          matrix="$(node scripts/render-repo-matrix.mjs \
+            --manifest manifests/repos.json \
+            --wave manifests/waves/${{ inputs.wave }}.json \
+            --operation dependency-rollout)"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  dispatch:
+    needs: resolve
+    if: ${{ fromJson(needs.resolve.outputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    uses: ./.github/workflows/dispatch-worker.yml
+    with:
+      repo: ${{ matrix.repo }}
+      operation: dependency-rollout
+      ref: ${{ inputs.ref }}
+      dry_run: ${{ inputs.dry_run }}
+    secrets:
+      repo_ops_token: ${{ secrets.REPO_OPS_TOKEN }}

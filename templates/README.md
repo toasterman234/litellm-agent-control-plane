@@ -8,3 +8,6 @@ LAP code changes.
 
 - **Install targets:** [`manifest.json`](./manifest.json) lists every template LAP can install.
 - **Add a new one:** use the `create-harness` skill — see [`AGENTS.md`](./AGENTS.md).
+- **Workspace behavior:** all templates are expected to follow the shared
+  [`WORKSPACE_CONTRACT.md`](./WORKSPACE_CONTRACT.md) so rules and skills are
+  discovered consistently.

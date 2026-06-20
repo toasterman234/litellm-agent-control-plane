@@ -60,4 +60,13 @@ test.describe("Bug fix: agent draft fallback notice", () => {
 
     expect(authErrors).toHaveLength(0);
   });
+
+  test("agent creation page shows OpenCode and Pydantic Deep templates", async ({ page }) => {
+    await login(page);
+    await page.goto("/agents/new/");
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("OpenCode agent")).toBeVisible();
+    await expect(page.getByText("Pydantic Deep agent")).toBeVisible();
+  });
 });

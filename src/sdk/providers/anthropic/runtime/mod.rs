@@ -277,7 +277,12 @@ fn normalize_mcp_servers(body: &mut Value) {
         let Value::Object(server) = server else {
             continue;
         };
-        server.retain(|key, _| matches!(key.as_str(), "type" | "name" | "url"));
+        server.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "type" | "name" | "url" | "authorization_token"
+            )
+        });
     }
 }
 
@@ -286,4 +291,36 @@ fn provider_session_id(client: &Lap, session_id: &str) -> Result<String, AgentSd
         .context_for_session(session_id)?
         .and_then(|context| context.provider_session_id)
         .unwrap_or_else(|| session_id.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::normalize_mcp_servers;
+
+    #[test]
+    fn normalize_mcp_servers_keeps_authorization_token() {
+        let mut body = json!({
+            "mcp_servers": [{
+                "name": "platform",
+                "type": "url",
+                "url": "http://example.test/mcp",
+                "authorization_token": "sk-local",
+                "ignored": true
+            }]
+        });
+
+        normalize_mcp_servers(&mut body);
+
+        assert_eq!(
+            body["mcp_servers"][0],
+            json!({
+                "name": "platform",
+                "type": "url",
+                "url": "http://example.test/mcp",
+                "authorization_token": "sk-local"
+            })
+        );
+    }
 }

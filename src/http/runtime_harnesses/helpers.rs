@@ -71,7 +71,7 @@ async fn custom_harnesses(
         result.push(HarnessResponse {
             alias: harness.alias.clone(),
             api_spec: harness.api_spec.clone(),
-            display_name: harness.alias.clone(),
+            display_name: custom_harness_display_name(&harness.alias),
             api_base: resolved_api_base,
             is_default: false,
             connected,
@@ -122,6 +122,14 @@ async fn load_harness_api_key(
     Ok((api_key, api_base))
 }
 
+fn custom_harness_display_name(alias: &str) -> String {
+    match alias {
+        "local-deepagents" => "Deep Agents (LangChain)".to_owned(),
+        "local-pydantic-deepagents" => "Deep Agents (Pydantic)".to_owned(),
+        _ => alias.to_owned(),
+    }
+}
+
 pub(super) fn decrypt_field(
     values: &serde_json::Map<String, serde_json::Value>,
     field: &str,
@@ -154,5 +162,21 @@ mod tests {
 
         assert_eq!(harnesses.len(), 1);
         assert_eq!(harnesses[0].alias, "elastic_agent_builder");
+    }
+
+    #[test]
+    fn custom_harness_display_names_are_human_readable() {
+        assert_eq!(
+            custom_harness_display_name("local-deepagents"),
+            "Deep Agents (LangChain)"
+        );
+        assert_eq!(
+            custom_harness_display_name("local-pydantic-deepagents"),
+            "Deep Agents (Pydantic)"
+        );
+        assert_eq!(
+            custom_harness_display_name("local-opencode"),
+            "local-opencode"
+        );
     }
 }

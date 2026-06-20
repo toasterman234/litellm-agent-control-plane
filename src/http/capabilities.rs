@@ -19,6 +19,7 @@ pub async fn capabilities(
         "models": model_ids(&state),
         "endpoints": [
             "/v1/messages",
+            "/v1/chat/completions",
             "/mcp",
             "/mcp/{server_id}",
             "/api/agents",

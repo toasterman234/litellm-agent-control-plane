@@ -6,6 +6,7 @@ OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-${OPENCLAW_API_KEY:-local-open
 OPENCLAW_AGENT_ID="${OPENCLAW_AGENT_ID:-dev}"
 OPENCLAW_AGENT_MODEL="${OPENCLAW_AGENT_MODEL:-litellm/claude-sonnet-4-6}"
 OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace-dev}"
+LAP_DEFAULT_WORKSPACE="${LAP_DEFAULT_WORKSPACE:-}"
 OPENCLAW_MEMORY_PROVIDER="${OPENCLAW_MEMORY_PROVIDER:-none}"
 OPENCLAW_MEMORY_MODEL="${OPENCLAW_MEMORY_MODEL:-}"
 OPENCLAW_SEED_RUNTIME_MEMORY="${OPENCLAW_SEED_RUNTIME_MEMORY:-1}"
@@ -29,6 +30,7 @@ export OPENCLAW_GATEWAY_TOKEN
 export OPENCLAW_AGENT_ID
 export OPENCLAW_AGENT_MODEL
 export OPENCLAW_WORKSPACE
+export LAP_DEFAULT_WORKSPACE
 export OPENCLAW_MEMORY_PROVIDER
 export OPENCLAW_MEMORY_MODEL
 export OPENCLAW_SEED_RUNTIME_MEMORY
@@ -58,13 +60,38 @@ home = Path(os.environ["HOME"])
 config_dir = home / ".openclaw"
 workspace = Path(os.environ["OPENCLAW_WORKSPACE"])
 memory_dir = workspace / "memory"
+default_workspace = os.environ.get("LAP_DEFAULT_WORKSPACE", "").strip()
 config_dir.mkdir(parents=True, exist_ok=True)
 workspace.mkdir(parents=True, exist_ok=True)
 memory_dir.mkdir(parents=True, exist_ok=True)
 
+if default_workspace:
+    default_path = Path(default_workspace).expanduser()
+    if default_path.is_dir():
+        link_path = workspace / "workspace"
+        try:
+            if link_path.exists() or link_path.is_symlink():
+                if link_path.is_dir() and not link_path.is_symlink():
+                    pass
+                else:
+                    link_path.unlink()
+            if not link_path.exists():
+                link_path.symlink_to(default_path, target_is_directory=True)
+        except OSError:
+            pass
+
 if os.environ.get("OPENCLAW_SEED_RUNTIME_MEMORY", "1") != "0":
     memory_file = workspace / "MEMORY.md"
     if not memory_file.exists():
+        workspace_lines = []
+        if default_workspace:
+            workspace_lines = [
+                f"- Primary workspace root: {default_workspace}",
+                "- Rules live in `workspace/AGENTS.md`, `workspace/CLAUDE.md`, `workspace/CODING_STANDARDS.md`, and `workspace/.agent/rules/` when that mirror exists.",
+                "- Skills live in `workspace/.agent/skills/` and `workspace/skills/`.",
+                "- Skills are not rules unless a rule file explicitly says they are mandatory.",
+                "",
+            ]
         memory_file.write_text(
             "\n".join(
                 [
@@ -74,6 +101,7 @@ if os.environ.get("OPENCLAW_SEED_RUNTIME_MEMORY", "1") != "0":
                     "- Browser automation is available through the container Chromium installation when the browser plugin is running.",
                     "- Model inference is routed through the LAP gateway via the configured litellm provider.",
                     "",
+                    *workspace_lines,
                 ],
             ),
             encoding="utf-8",

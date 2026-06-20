@@ -90,8 +90,11 @@ type BuilderView = "edit" | "config" | "preview";
 const TEMPLATE_ICONS: Record<string, LucideIcon> = {
   blank: Bot,
   "deep-researcher": Search,
+  "opencode-agent": Code2,
+  "pydantic-deep-agent": FileSearch,
   "inbox-triage": Mail,
   "security-reviewer": ShieldCheck,
+  "agent-architect": Wrench,
   "support-agent": LifeBuoy,
   "incident-commander": Bell,
   "data-analyst": Database,

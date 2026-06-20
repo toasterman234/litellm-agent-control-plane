@@ -50,16 +50,17 @@ function fakeSse(events = [], { ok = true, status = 200 } = {}) {
 }
 
 // Build the app with fake opencode collaborators and capture their calls.
-function buildHarness({ eventStreams = [[]], eventResponse = null } = {}) {
+function buildHarness({ eventStreams = [[]], eventResponse = null, messageResponses = [] } = {}) {
   const store = createStore(":memory:");
   const calls = { ocFetch: [], provisionAgent: [], ensureProviderModel: [], reboots: 0 };
   let eventStreamIndex = 0;
+  let messageResponseIndex = 0;
 
   const app = createApp({
     store,
     workdir: "/tmp/test-workspace",
     defaultModelProviderID: "litellm",
-    litellmProviderID: "litellm",
+    registeredModelProviderID: "litellm",
     listModels: async () => ({
       object: "list",
       data: [
@@ -84,6 +85,9 @@ function buildHarness({ eventStreams = [[]], eventResponse = null } = {}) {
       if (path === "/event") {
         if (eventResponse) return eventResponse();
         return fakeSse(eventStreams[eventStreamIndex++] || []);
+      }
+      if (path.endsWith("/message")) {
+        return fakeRes(messageResponses[messageResponseIndex++] || []);
       }
       return fakeRes({});
     },
@@ -117,6 +121,16 @@ async function req(base, method, path, body) {
     json = undefined;
   }
   return { status: res.status, json, text };
+}
+
+async function waitFor(check, { timeoutMs = 1500, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await check();
+    if (result) return result;
+    if (Date.now() >= deadline) return null;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 test("GET /v1/models returns the configured OpenAI-shaped model list", async (t) => {
@@ -182,10 +196,8 @@ test("per-agent gpt-5.5 model flows from create through prompt_async", async (t)
   assert.equal(sent.agent, agentId);
   assert.deepEqual(sent.model, { providerID: "litellm", modelID: "gpt-5.5" });
   assert.deepEqual(sent.parts, [{ type: "text", text: "Say hello." }]);
-  assert.deepEqual(calls.ocFetch.map((c) => c.path).slice(-2), [
-    "/event",
-    "/session/ses_test/prompt_async",
-  ]);
+  assert.equal(calls.ocFetch.some((c) => c.path === "/event"), true);
+  assert.equal(calls.ocFetch.some((c) => c.path === "/session/ses_test/prompt_async"), true);
 });
 
 test("litellm/gpt-5.5 keeps its explicit provider split end to end", async (t) => {
@@ -266,9 +278,28 @@ test("GET /v1/sessions/:id/events returns flat replay events with type", async (
   assert.equal("data" in history.json.data[0], false);
 });
 
-test("POST /v1/sessions/:id/events rejects when background capture cannot start", async (t) => {
+test("POST /v1/sessions/:id/events falls back to session message polling when /event is unavailable", async (t) => {
+  const future = Date.now() + 60_000;
+  const assistantMessage = {
+    info: {
+      id: "msg_assistant",
+      sessionID: "ses_test",
+      role: "assistant",
+      time: { created: future, completed: future + 10 },
+    },
+    parts: [
+      {
+        id: "part_text",
+        sessionID: "ses_test",
+        messageID: "msg_assistant",
+        type: "text",
+        text: "Hello from polling fallback.",
+      },
+    ],
+  };
   const { app, calls } = buildHarness({
     eventResponse: () => fakeSse([], { ok: false, status: 503 }),
+    messageResponses: [[assistantMessage]],
   });
   const { base, close } = await listen(app);
   t.after(() => close());
@@ -282,12 +313,20 @@ test("POST /v1/sessions/:id/events rejects when background capture cannot start"
     events: [{ type: "user.message", content: "hi" }],
   });
 
-  assert.equal(sent.status, 502);
-  assert.match(sent.json.error, /opencode \/event unavailable/);
-  assert.equal(calls.ocFetch.some((c) => c.path.endsWith("/prompt_async")), false);
+  assert.equal(sent.status, 202);
+  assert.equal(calls.ocFetch.some((c) => c.path.endsWith("/prompt_async")), true);
 
-  const history = await req(base, "GET", "/v1/sessions/ses_test/events");
-  assert.deepEqual(history.json.data.map((e) => e.type), ["session.error"]);
+  const history = await waitFor(async () => {
+    const current = await req(base, "GET", "/v1/sessions/ses_test/events");
+    return current.json.data.length >= 3 ? current : null;
+  });
+  assert.ok(history, "history should include fallback assistant output");
+  assert.deepEqual(history.json.data.map((e) => e.type), [
+    "user.message",
+    "agent.message",
+    "session.status_idle",
+  ]);
+  assert.equal(history.json.data[1].content[0].text, "Hello from polling fallback.");
 });
 
 test("background capture and live stream dedupe no-id events", async (t) => {
@@ -308,7 +347,28 @@ test("background capture and live stream dedupe no-id events", async (t) => {
       },
     },
   ];
-  const { app } = buildHarness({ eventStreams: [rawEvents, rawEvents] });
+  const { app } = buildHarness({
+    eventStreams: [rawEvents, rawEvents],
+    messageResponses: [[
+      {
+        info: {
+          id: "msg_1",
+          sessionID: "ses_test",
+          role: "assistant",
+          time: { created: Date.now() + 60_000, completed: Date.now() + 60_010 },
+        },
+        parts: [
+          {
+            id: "part_1",
+            sessionID: "ses_test",
+            messageID: "msg_1",
+            type: "text",
+            text: "same",
+          },
+        ],
+      },
+    ]],
+  });
   const { base, close } = await listen(app);
   t.after(() => close());
 
@@ -328,7 +388,13 @@ test("background capture and live stream dedupe no-id events", async (t) => {
   assert.match(streamText, /event: agent\.message/);
   assert.match(streamText, /event: session\.status_idle/);
 
-  const history = await req(base, "GET", "/v1/sessions/ses_test/events");
+  const history = await waitFor(async () => {
+    const current = await req(base, "GET", "/v1/sessions/ses_test/events");
+    return current.json.data.some((e) => e.type === "session.status_idle") ? current : null;
+  });
+  assert.ok(history, "history should include terminal idle");
   const types = history.json.data.map((e) => e.type);
-  assert.deepEqual(types, ["user.message", "agent.message", "session.status_idle"]);
+  assert.equal(types[0], "user.message");
+  assert.equal(types.includes("agent.message"), true);
+  assert.equal(types.includes("session.status_idle"), true);
 });

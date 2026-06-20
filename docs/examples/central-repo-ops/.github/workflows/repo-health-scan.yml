@@ -1,0 +1,125 @@
+name: Repo Health Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      wave:
+        description: "Wave manifest to use"
+        required: true
+        default: "pilot"
+        type: choice
+        options:
+          - pilot
+          - broad-rollout
+          - frozen
+      ref:
+        description: "Target branch or ref for dispatch"
+        required: true
+        default: "main"
+        type: string
+      dispatch_to_target:
+        description: "Dispatch repo-health to the target repo worker"
+        required: true
+        default: false
+        type: boolean
+      dry_run:
+        description: "Skip live dispatches"
+        required: true
+        default: true
+        type: boolean
+  schedule:
+    - cron: "15 14 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs/examples/central-repo-ops
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate manifests
+        run: node scripts/validate-manifest.mjs .
+
+  resolve:
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.render.outputs.matrix }}
+      wave: ${{ steps.wave.outputs.name }}
+    defaults:
+      run:
+        working-directory: docs/examples/central-repo-ops
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - id: wave
+        run: |
+          if [ -n "${{ inputs.wave }}" ]; then
+            echo "name=${{ inputs.wave }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=pilot" >> "$GITHUB_OUTPUT"
+          fi
+      - id: render
+        run: |
+          matrix="$(node scripts/render-repo-matrix.mjs \
+            --manifest manifests/repos.json \
+            --wave manifests/waves/${{ steps.wave.outputs.name }}.json \
+            --operation repo-health)"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  health-scan:
+    needs: resolve
+    if: ${{ fromJson(needs.resolve.outputs.matrix).include[0] != null }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Produce repo health artifact
+        run: |
+          mkdir -p artifacts
+          cat <<'EOF' > "artifacts/${{ matrix.id }}.md"
+          # Repo Health
+
+          Repo: `${{ matrix.repo }}`
+          Tier: `${{ matrix.tier }}`
+          Branch: `${{ matrix.default_branch }}`
+
+          This scaffold job does not inspect live GitHub state yet.
+
+          Intended future checks:
+          - branch protection
+          - CODEOWNERS
+          - CI workflow presence
+          - stale default branch settings
+          - required labels or metadata
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repo-health-${{ matrix.id }}
+          path: artifacts/${{ matrix.id }}.md
+
+  dispatch:
+    needs: resolve
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dispatch_to_target && fromJson(needs.resolve.outputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    uses: ./.github/workflows/dispatch-worker.yml
+    with:
+      repo: ${{ matrix.repo }}
+      operation: repo-health
+      ref: ${{ inputs.ref }}
+      dry_run: ${{ inputs.dry_run }}
+    secrets:
+      repo_ops_token: ${{ secrets.REPO_OPS_TOKEN }}

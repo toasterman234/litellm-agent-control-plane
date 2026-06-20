@@ -1,0 +1,66 @@
+name: Dispatch Worker
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        required: true
+        type: string
+      operation:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
+      dry_run:
+        required: true
+        type: boolean
+    secrets:
+      repo_ops_token:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build dispatch payload
+        id: payload
+        run: |
+          cat <<EOF > payload.json
+          {
+            "event_type": "repo-ops-${{ inputs.operation }}",
+            "client_payload": {
+              "operation": "${{ inputs.operation }}",
+              "ref": "${{ inputs.ref }}",
+              "requested_by": "${{ github.actor }}",
+              "source_repo": "${{ github.repository }}",
+              "source_run_id": "${{ github.run_id }}",
+              "dry_run": ${{ inputs.dry_run }}
+            }
+          }
+          EOF
+          cat payload.json
+      - name: Dry run
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "dry-run: would dispatch ${{ inputs.operation }} to ${{ inputs.repo }}"
+      - name: Dispatch repository event
+        if: ${{ !inputs.dry_run && secrets.repo_ops_token != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.repo_ops_token }}
+        run: |
+          curl --fail-with-body \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ inputs.repo }}/dispatches" \
+            -d @payload.json
+      - name: Missing token guard
+        if: ${{ !inputs.dry_run && secrets.repo_ops_token == '' }}
+        run: |
+          echo "REPO_OPS_TOKEN is required for live dispatches" >&2
+          exit 1
