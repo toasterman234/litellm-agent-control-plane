@@ -1,0 +1,34 @@
+# Fleet forwarder (canonical source — synced into every managed repo by
+# central-repo-ops scripts/fleet-deploy.mjs; do not hand-edit the copies).
+#
+# WHY this exists: the triage/routing "brains" run on central-repo-ops' private
+# self-hosted runner + litellm gateway, which leaf repos cannot reach (personal
+# account → no shared runners). So leaf repos do NOT host the pipeline. They host
+# only this tiny GitHub-hosted stub: when an issue opens here, it pings
+# central-repo-ops, which does the triage and acts on this repo via the API.
+#
+# This file is intentionally trivial and stable — it should rarely change, so the
+# sync rarely has to touch leaf repos. All intelligence lives in central.
+name: Fleet forwarder
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify central-repo-ops
+        env:
+          # PAT with write to central-repo-ops, installed by the sync job.
+          GH_TOKEN: ${{ secrets.FLEET_WRITE_TOKEN }}
+        run: |
+          gh api repos/toasterman234/central-repo-ops/dispatches \
+            -f "event_type=fleet-issue" \
+            -F "client_payload[repo]=${{ github.repository }}" \
+            -F "client_payload[issue]=${{ github.event.issue.number }}" \
+            -F "client_payload[action]=${{ github.event.action }}"
