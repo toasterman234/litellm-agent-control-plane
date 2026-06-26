@@ -776,7 +776,7 @@ function ChatInner() {
           if (activeSessionRef.current !== sid) return;
           eventBufferRef.current = events.slice(-500).map((ev) => ({ ts: Date.now(), ev: ev as Frame["ev"] }));
           mergeRuntimeEventsAndStatus(events);
-          if (cancelled || runtimeStatusFromEvents(events) === "idle") return;
+          if (cancelled) return;
           unsub = subscribeRuntimeEvents({
             sessionId: sid,
             onEvent: (ev) => {
